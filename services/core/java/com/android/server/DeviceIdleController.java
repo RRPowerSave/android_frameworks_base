@@ -108,7 +108,10 @@ public class DeviceIdleController extends SystemService
         implements AnyMotionDetector.DeviceIdleCallback {
     private static final String TAG = "DeviceIdleController";
 
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
+
+    private boolean mSemiIdleEnabled = true;
+
 
     private static final boolean COMPRESS_TIME = false;
 
@@ -799,6 +802,35 @@ public class DeviceIdleController extends SystemService
                     Slog.e(TAG, "Bad device idle settings", e);
                 }
 
+                LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = 15000L;
+                LIGHT_PRE_IDLE_TIMEOUT = 3000L;
+                LIGHT_IDLE_TIMEOUT = 60*60*1000L;
+                LIGHT_IDLE_FACTOR = 1.0F;
+                LIGHT_MAX_IDLE_TIMEOUT = 60*60*1000L;
+                LIGHT_IDLE_MAINTENANCE_MIN_BUDGET = 5000L;
+                LIGHT_IDLE_MAINTENANCE_MAX_BUDGET = 15000L;
+                MIN_LIGHT_MAINTENANCE_TIME = 5000L;
+                MIN_DEEP_MAINTENANCE_TIME = 5000L;
+                INACTIVE_TIMEOUT = 5000L;
+                SENSING_TIMEOUT = 0L;
+                LOCATING_TIMEOUT = 0L;
+                LOCATION_ACCURACY = 100;
+                MOTION_INACTIVE_TIMEOUT = 0L;
+                IDLE_AFTER_INACTIVE_TIMEOUT = 0L;
+                IDLE_PENDING_TIMEOUT = 5000L;
+                MAX_IDLE_PENDING_TIMEOUT = 10000L;
+                IDLE_PENDING_FACTOR = 1.0F;
+                IDLE_TIMEOUT = 3*60*60*1000L;
+                MAX_IDLE_TIMEOUT = 12*60*60*1000L;
+                IDLE_FACTOR = 2.0F;
+                MIN_TIME_TO_ALARM = 0;
+                MAX_TEMP_APP_WHITELIST_DURATION = 10000L;
+                MMS_TEMP_APP_WHITELIST_DURATION = 10000L;
+                SMS_TEMP_APP_WHITELIST_DURATION = 10000L;
+                NOTIFICATION_WHITELIST_DURATION = 10000L;
+
+
+		/*
                 LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = mParser.getLong(
                         KEY_LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT,
                         !COMPRESS_TIME ? 5 * 60 * 1000L : 15 * 1000L);
@@ -858,6 +890,7 @@ public class DeviceIdleController extends SystemService
                         KEY_SMS_TEMP_APP_WHITELIST_DURATION, 20 * 1000L);
                 NOTIFICATION_WHITELIST_DURATION = mParser.getLong(
                         KEY_NOTIFICATION_WHITELIST_DURATION, 30 * 1000L);
+		*/ 
             }
         }
 
@@ -1034,11 +1067,11 @@ public class DeviceIdleController extends SystemService
                         deepChanged = mLocalPowerManager.setDeviceIdleMode(true);
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
                     } else {
-                        deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
+                        deepChanged = mLocalPowerManager.setDeviceIdleMode(true);
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(true);
                     }
                     try {
-                        mNetworkPolicyManager.setDeviceIdleMode(true);
+                        // mNetworkPolicyManager.setDeviceIdleMode(true);
                         mBatteryStats.noteDeviceIdleMode(msg.what == MSG_REPORT_IDLE_ON
                                 ? BatteryStats.DEVICE_IDLE_MODE_DEEP
                                 : BatteryStats.DEVICE_IDLE_MODE_LIGHT, null, Process.myUid());
@@ -1340,11 +1373,13 @@ public class DeviceIdleController extends SystemService
         final PackageManager pm = getContext().getPackageManager();
 
         synchronized (this) {
-            mLightEnabled = mDeepEnabled = getContext().getResources().getBoolean(
-                    com.android.internal.R.bool.config_enableAutoPowerModes) &&
-                    PackageManagerUtils.isAppInstalled(getContext(), "com.google.android.gms");
+            mLightEnabled = mDeepEnabled = getContext().getResources().getBoolean(com.android.internal.R.bool.config_enableAutoPowerModes);
+                    
             SystemConfig sysConfig = SystemConfig.getInstance();
             ArraySet<String> allowPowerExceptIdle = sysConfig.getAllowInPowerSaveExceptIdle();
+
+	    allowPowerExceptIdle.clear();
+
             for (int i=0; i<allowPowerExceptIdle.size(); i++) {
                 String pkg = allowPowerExceptIdle.valueAt(i);
                 try {
@@ -1357,6 +1392,9 @@ public class DeviceIdleController extends SystemService
                 }
             }
             ArraySet<String> allowPower = sysConfig.getAllowInPowerSave();
+
+	    allowPower.clear();
+
             for (int i=0; i<allowPower.size(); i++) {
                 String pkg = allowPower.valueAt(i);
                 try {
@@ -1648,9 +1686,8 @@ public class DeviceIdleController extends SystemService
 
     void addPowerSaveTempWhitelistAppChecked(String packageName, long duration,
             int userId, String reason) throws RemoteException {
-        getContext().enforceCallingPermission(
-                Manifest.permission.CHANGE_DEVICE_IDLE_TEMP_WHITELIST,
-                "No permission to change device idle whitelist");
+
+
         final int callingUid = Binder.getCallingUid();
         userId = ActivityManagerNative.getDefault().handleIncomingUser(
                 Binder.getCallingPid(),
@@ -1692,12 +1729,7 @@ public class DeviceIdleController extends SystemService
         Runnable networkPolicyTempWhitelistCallback = null;
         synchronized (this) {
             int callingAppId = UserHandle.getAppId(callingUid);
-            if (callingAppId >= Process.FIRST_APPLICATION_UID) {
-                if (!mPowerSaveWhitelistSystemAppIds.get(callingAppId)) {
-                    throw new SecurityException("Calling app " + UserHandle.formatUid(callingUid)
-                            + " is not on whitelist");
-                }
-            }
+
             duration = Math.min(duration, mConstants.MAX_TEMP_APP_WHITELIST_DURATION);
             Pair<MutableLong, String> entry = mTempWhitelistAppIdEndTimes.get(appId);
             final boolean newEntry = entry == null;
@@ -1843,6 +1875,10 @@ public class DeviceIdleController extends SystemService
             mScreenOn = true;
             if (!mForceIdle) {
                 becomeActiveLocked("screen", Process.myUid());
+		if( mSemiIdleEnabled ) {
+		    becomeInactiveIfAppropriateLocked();
+		} 
+	
             }
         }
     }
@@ -1886,10 +1922,10 @@ public class DeviceIdleController extends SystemService
 
     void becomeInactiveIfAppropriateLocked() {
         if (DEBUG) Slog.d(TAG, "becomeInactiveIfAppropriateLocked()");
-        if ((!mScreenOn && !mCharging) || mForceIdle) {
+        if (!mCharging || mForceIdle) {
             // Screen has turned off; we are now going to become inactive and start
             // waiting to see if we will ultimately go idle.
-            if (mState == STATE_ACTIVE && mDeepEnabled) {
+            if (!mScreenOn && mState == STATE_ACTIVE && mDeepEnabled) {
                 mState = STATE_INACTIVE;
                 if (DEBUG) Slog.d(TAG, "Moved from STATE_ACTIVE to STATE_INACTIVE");
                 resetIdleManagementLocked();
@@ -1900,7 +1936,7 @@ public class DeviceIdleController extends SystemService
                 mLightState = LIGHT_STATE_INACTIVE;
                 if (DEBUG) Slog.d(TAG, "Moved from LIGHT_STATE_ACTIVE to LIGHT_STATE_INACTIVE");
                 resetLightIdleManagementLocked();
-                scheduleLightAlarmLocked(mConstants.LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT);
+                scheduleLightAlarmLocked(mConstants.LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT, false);
                 EventLogTags.writeDeviceIdleLight(mLightState, "no activity");
             }
         }
@@ -1937,7 +1973,7 @@ public class DeviceIdleController extends SystemService
             return;
         }
 
-        if (DEBUG) Slog.d(TAG, "stepLightIdleStateLocked: mLightState=" + mLightState);
+        if (DEBUG) Slog.d(TAG, "stepLightIdleStateLocked: mLightState=" + mLightState + ", reason=" + reason);
         EventLogTags.writeDeviceIdleLightStep();
 
         switch (mLightState) {
@@ -1951,7 +1987,7 @@ public class DeviceIdleController extends SystemService
                     // before going in to our first idle.
                     mLightState = LIGHT_STATE_PRE_IDLE;
                     EventLogTags.writeDeviceIdleLight(mLightState, reason);
-                    scheduleLightAlarmLocked(mConstants.LIGHT_PRE_IDLE_TIMEOUT);
+                    scheduleLightAlarmLocked(mConstants.LIGHT_PRE_IDLE_TIMEOUT, false);
                     break;
                 }
                 // Nothing active, fall through to immediately idle.
@@ -1968,7 +2004,7 @@ public class DeviceIdleController extends SystemService
                     }
                 }
                 mMaintenanceStartTime = 0;
-                scheduleLightAlarmLocked(mNextLightIdleDelay);
+                scheduleLightAlarmLocked(mNextLightIdleDelay, true);
                 mNextLightIdleDelay = Math.min(mConstants.LIGHT_MAX_IDLE_TIMEOUT,
                         (long)(mNextLightIdleDelay * mConstants.LIGHT_IDLE_FACTOR));
                 if (mNextLightIdleDelay < mConstants.LIGHT_IDLE_TIMEOUT) {
@@ -1993,7 +2029,7 @@ public class DeviceIdleController extends SystemService
                     } else if (mCurIdleBudget > mConstants.LIGHT_IDLE_MAINTENANCE_MAX_BUDGET) {
                         mCurIdleBudget = mConstants.LIGHT_IDLE_MAINTENANCE_MAX_BUDGET;
                     }
-                    scheduleLightAlarmLocked(mCurIdleBudget);
+                    scheduleLightAlarmLocked(mCurIdleBudget, false);
                     if (DEBUG) Slog.d(TAG,
                             "Moved from LIGHT_STATE_IDLE to LIGHT_STATE_IDLE_MAINTENANCE.");
                     mLightState = LIGHT_STATE_IDLE_MAINTENANCE;
@@ -2004,7 +2040,7 @@ public class DeviceIdleController extends SystemService
                     // We'd like to do maintenance, but currently don't have network
                     // connectivity...  let's try to wait until the network comes back.
                     // We'll only wait for another full idle period, however, and then give up.
-                    scheduleLightAlarmLocked(mNextLightIdleDelay);
+                    scheduleLightAlarmLocked(mNextLightIdleDelay, false);
                     if (DEBUG) Slog.d(TAG, "Moved to LIGHT_WAITING_FOR_NETWORK.");
                     mLightState = LIGHT_STATE_WAITING_FOR_NETWORK;
                     EventLogTags.writeDeviceIdleLight(mLightState, reason);
@@ -2014,7 +2050,7 @@ public class DeviceIdleController extends SystemService
     }
 
     void stepIdleStateLocked(String reason) {
-        if (DEBUG) Slog.d(TAG, "stepIdleStateLocked: mState=" + mState);
+        if (DEBUG) Slog.d(TAG, "stepIdleStateLocked: mState=" + mState + ", reason=" + reason);
         EventLogTags.writeDeviceIdleStep();
 
         final long now = SystemClock.elapsedRealtime();
@@ -2031,50 +2067,63 @@ public class DeviceIdleController extends SystemService
             case STATE_INACTIVE:
                 // We have now been inactive long enough, it is time to start looking
                 // for motion and sleep some more while doing so.
-                startMonitoringMotionLocked();
-                scheduleAlarmLocked(mConstants.IDLE_AFTER_INACTIVE_TIMEOUT, false);
                 // Reset the upcoming idle delays.
                 mNextIdlePendingDelay = mConstants.IDLE_PENDING_TIMEOUT;
                 mNextIdleDelay = mConstants.IDLE_TIMEOUT;
                 mState = STATE_IDLE_PENDING;
                 if (DEBUG) Slog.d(TAG, "Moved from STATE_INACTIVE to STATE_IDLE_PENDING.");
                 EventLogTags.writeDeviceIdle(mState, reason);
-                break;
+
+		if( mConstants.IDLE_AFTER_INACTIVE_TIMEOUT > 0 ) {
+                    startMonitoringMotionLocked();
+                    scheduleAlarmLocked(mConstants.IDLE_AFTER_INACTIVE_TIMEOUT, false);
+                    break;
+	   	}
+
             case STATE_IDLE_PENDING:
                 mState = STATE_SENSING;
                 if (DEBUG) Slog.d(TAG, "Moved from STATE_IDLE_PENDING to STATE_SENSING.");
                 EventLogTags.writeDeviceIdle(mState, reason);
-                scheduleSensingTimeoutAlarmLocked(mConstants.SENSING_TIMEOUT);
                 cancelLocatingLocked();
-                mNotMoving = false;
+
+                mNotMoving = true;
                 mLocated = false;
                 mLastGenericLocation = null;
                 mLastGpsLocation = null;
-                mAnyMotionDetector.checkForAnyMotion();
-                break;
+
+		if( mConstants.SENSING_TIMEOUT > 0 ) {
+                    mAnyMotionDetector.checkForAnyMotion();
+                    scheduleSensingTimeoutAlarmLocked(mConstants.SENSING_TIMEOUT);
+                    break;
+		}
+
             case STATE_SENSING:
                 cancelSensingTimeoutAlarmLocked();
                 mState = STATE_LOCATING;
                 if (DEBUG) Slog.d(TAG, "Moved from STATE_SENSING to STATE_LOCATING.");
                 EventLogTags.writeDeviceIdle(mState, reason);
-                scheduleAlarmLocked(mConstants.LOCATING_TIMEOUT, false);
-                if (mLocationManager != null
-                        && mLocationManager.getProvider(LocationManager.NETWORK_PROVIDER) != null) {
-                    mLocationManager.requestLocationUpdates(mLocationRequest,
-                            mGenericLocationListener, mHandler.getLooper());
-                    mLocating = true;
-                } else {
-                    mHasNetworkLocation = false;
-                }
-                if (mLocationManager != null
-                        && mLocationManager.getProvider(LocationManager.GPS_PROVIDER) != null) {
-                    mHasGps = true;
-                    mLocationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 5,
-                            mGpsLocationListener, mHandler.getLooper());
-                    mLocating = true;
-                } else {
-                    mHasGps = false;
-                }
+		if( mConstants.LOCATING_TIMEOUT > 0 ) {
+                    scheduleAlarmLocked(mConstants.LOCATING_TIMEOUT, false);
+                    if (mLocationManager != null
+                            && mLocationManager.getProvider(LocationManager.NETWORK_PROVIDER) != null) {
+                        mLocationManager.requestLocationUpdates(mLocationRequest,
+                                mGenericLocationListener, mHandler.getLooper());
+                        mLocating = true;
+                    } else {
+                        mHasNetworkLocation = false;
+                    }
+                    if (mLocationManager != null
+                            && mLocationManager.getProvider(LocationManager.GPS_PROVIDER) != null) {
+                        mHasGps = true;
+                        mLocationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 5,
+                                mGpsLocationListener, mHandler.getLooper());
+                        mLocating = true;
+                    } else {
+                        mHasGps = false;
+                    }
+		} else {
+		    mLocating = false;
+		}
                 // If we have a location provider, we're all set, the listeners will move state
                 // forward.
                 if (mLocating) {
@@ -2342,11 +2391,16 @@ public class DeviceIdleController extends SystemService
         }
     }
 
-    void scheduleLightAlarmLocked(long delay) {
+    void scheduleLightAlarmLocked(long delay, boolean idleUntil) {
         if (DEBUG) Slog.d(TAG, "scheduleLightAlarmLocked(" + delay + ")");
         mNextLightAlarmTime = SystemClock.elapsedRealtime() + delay;
-        mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                mNextLightAlarmTime, "DeviceIdleController.light", mLightAlarmListener, mHandler);
+        if (idleUntil) {
+            mAlarmManager.setIdleUntil(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    mNextLightAlarmTime, "DeviceIdleController.light", mLightAlarmListener, mHandler);
+	} else {
+            mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    mNextLightAlarmTime, "DeviceIdleController.light", mLightAlarmListener, mHandler);
+	}
     }
 
     void scheduleSensingTimeoutAlarmLocked(long delay) {
