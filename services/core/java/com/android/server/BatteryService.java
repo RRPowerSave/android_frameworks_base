@@ -519,8 +519,8 @@ public final class BatteryService extends SystemService {
                 mBatteryProps.batteryPresent != mLastBatteryPresent ||
                 mBatteryProps.batteryLevel != mLastBatteryLevel ||
                 mPlugType != mLastPlugType ||
-                mBatteryProps.batteryVoltage != mLastBatteryVoltage ||
-                mBatteryProps.batteryTemperature != mLastBatteryTemperature ||
+                mBatteryProps.batteryVoltage/100 != mLastBatteryVoltage/100 ||
+                mBatteryProps.batteryTemperature/10 != mLastBatteryTemperature/10 ||
                 mBatteryProps.maxChargingCurrent != mLastMaxChargingCurrent ||
                 mBatteryProps.maxChargingVoltage != mLastMaxChargingVoltage ||
                 mBatteryProps.batteryChargeCounter != mLastChargeCounter ||
