@@ -27,6 +27,8 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ComponentName;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.database.ContentObserver;
@@ -112,7 +114,7 @@ public final class PowerManagerService extends SystemService
         implements Watchdog.Monitor {
     private static final String TAG = "PowerManagerService";
 
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
     private static final boolean DEBUG_SPEW = DEBUG && true;
 
     // Message: Sent when a user activity timeout occurs to update the power state.
@@ -778,6 +780,9 @@ public final class PowerManagerService extends SystemService
             // Go.
             readConfigurationLocked();
             updateSettingsLocked();
+
+            initGmsUid(mContext);
+
             mDirty |= DIRTY_BATTERY_STATE;
             updatePowerStateLocked();
         }
@@ -1042,12 +1047,13 @@ public final class PowerManagerService extends SystemService
             }
 
 	    boolean blockWakelock = false;
+/*
 	    if (!mSeenWakeLocks.contains(tag)){
                 if ((flags & PowerManager.WAKE_LOCK_LEVEL_MASK) == PowerManager.PARTIAL_WAKE_LOCK){
                     mSeenWakeLocks.add(tag);
                 }
 	    }
-
+*/
 	    if (mWakeLockBlockingEnabled == 1){
 		if (mBlockedWakeLocks.contains(tag)){
 		    blockWakelock = true;
@@ -1066,7 +1072,11 @@ public final class PowerManagerService extends SystemService
                             uid, pid, ws, historyTag);
                     wakeLock.updateProperties(flags, tag, packageName, ws, historyTag, uid, pid);
                 }
-                notifyAcquire = false;
+                if( setWakeLockDisabledStateLocked(wakeLock) ) {
+		    notifyAcquire = true;
+		} else {
+                    notifyAcquire = false;
+		}
             } else {
                 wakeLock = new WakeLock(lock, flags, tag, packageName, ws, historyTag, uid, pid);
                 try {
@@ -1092,6 +1102,11 @@ public final class PowerManagerService extends SystemService
                 // stay awake.
                 notifyWakeLockAcquiredLocked(wakeLock);
             }
+
+            //if (mDeviceIdleMode) {
+                updateWakeLockDisabledStatesLocked();
+            //}
+
         }
     }
 
@@ -1226,7 +1241,7 @@ public final class PowerManagerService extends SystemService
 
     protected void notifyWakeLockAcquiredLocked(WakeLock wakeLock) {
         if (mSystemReady) {
-            if (!wakeLock.isBlocked()){
+            if (!wakeLock.isBlocked() && !wakeLock.mDisabled){
                 mNotifier.onWakeLockAcquired(wakeLock.mFlags, wakeLock.mTag, wakeLock.mPackageName,
                         wakeLock.mOwnerUid, wakeLock.mOwnerPid, wakeLock.mWorkSource,
                         wakeLock.mHistoryTag);
@@ -1268,7 +1283,7 @@ public final class PowerManagerService extends SystemService
 
     private void notifyWakeLockChangingLocked(WakeLock wakeLock, int flags, String tag,
             String packageName, int uid, int pid, WorkSource ws, String historyTag) {
-        if (mSystemReady && wakeLock.mNotifiedAcquired) {
+        if (mSystemReady && wakeLock.mNotifiedAcquired && !wakeLock.mDisabled) {
             mNotifier.onWakeLockChanging(wakeLock.mFlags, wakeLock.mTag, wakeLock.mPackageName,
                     wakeLock.mOwnerUid, wakeLock.mOwnerPid, wakeLock.mWorkSource,
                     wakeLock.mHistoryTag, flags, tag, packageName, uid, pid, ws, historyTag);
@@ -1283,13 +1298,13 @@ public final class PowerManagerService extends SystemService
 
     protected void notifyWakeLockReleasedLocked(WakeLock wakeLock) {
         if (mSystemReady) {
-            if (!wakeLock.isBlocked()){
+            /*if (!wakeLock.isBlocked()){*/
                 wakeLock.mAcquireTime = 0;
                 mNotifier.onWakeLockReleased(wakeLock.mFlags, wakeLock.mTag,
                         wakeLock.mPackageName, wakeLock.mOwnerUid, wakeLock.mOwnerPid,
                         wakeLock.mWorkSource, wakeLock.mHistoryTag);
                 notifyWakeLockLongFinishedLocked(wakeLock);
-            }
+            /*}*/
         }
     }
 
@@ -1842,7 +1857,7 @@ public final class PowerManagerService extends SystemService
                 mWakeLockSummary &= ~(WAKE_LOCK_SCREEN_BRIGHT | WAKE_LOCK_SCREEN_DIM
                         | WAKE_LOCK_BUTTON_BRIGHT);
                 if (mWakefulness == WAKEFULNESS_ASLEEP) {
-                    mWakeLockSummary &= ~WAKE_LOCK_PROXIMITY_SCREEN_OFF;
+                    //mWakeLockSummary &= ~WAKE_LOCK_PROXIMITY_SCREEN_OFF;
                 }
             }
 
@@ -2816,6 +2831,7 @@ public final class PowerManagerService extends SystemService
                 return false;
             }
             mDeviceIdleMode = enabled;
+            powerHintInternal(POWER_HINT_LOW_POWER, mDeviceIdleMode ? 1 : 0);
             updateWakeLockDisabledStatesLocked();
         }
         if (enabled) {
@@ -2830,6 +2846,7 @@ public final class PowerManagerService extends SystemService
         synchronized (mLock) {
             if (mLightDeviceIdleMode != enabled) {
                 mLightDeviceIdleMode = enabled;
+            	powerHintInternal(POWER_HINT_LOW_POWER, mLightDeviceIdleMode ? 1 : 0);
                 return true;
             }
             return false;
@@ -2839,36 +2856,36 @@ public final class PowerManagerService extends SystemService
     void setDeviceIdleWhitelistInternal(int[] appids) {
         synchronized (mLock) {
             mDeviceIdleWhitelist = appids;
-            if (mDeviceIdleMode) {
+            //if (mDeviceIdleMode) {
                 updateWakeLockDisabledStatesLocked();
-            }
+            //}
         }
     }
 
     void setDeviceIdleTempWhitelistInternal(int[] appids) {
         synchronized (mLock) {
             mDeviceIdleTempWhitelist = appids;
-            if (mDeviceIdleMode) {
+            //if (mDeviceIdleMode) {
                 updateWakeLockDisabledStatesLocked();
-            }
+            //}
         }
     }
 
     void updateUidProcStateInternal(int uid, int procState) {
         synchronized (mLock) {
             mUidState.put(uid, procState);
-            if (mDeviceIdleMode) {
+            //if (mDeviceIdleMode) {
                 updateWakeLockDisabledStatesLocked();
-            }
+            //}
         }
     }
 
     void uidGoneInternal(int uid) {
         synchronized (mLock) {
             mUidState.delete(uid);
-            if (mDeviceIdleMode) {
+            //if (mDeviceIdleMode) {
                 updateWakeLockDisabledStatesLocked();
-            }
+            //}
         }
     }
 
@@ -2900,19 +2917,69 @@ public final class PowerManagerService extends SystemService
         if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK)
                 == PowerManager.PARTIAL_WAKE_LOCK) {
             boolean disabled = false;
-            if (mDeviceIdleMode) {
-                final int appid = UserHandle.getAppId(wakeLock.mOwnerUid);
+            if (/*mDeviceIdleMode && */
+		(wakeLock.mFlags & (
+			WAKE_LOCK_SCREEN_BRIGHT |
+			WAKE_LOCK_SCREEN_DIM |
+			WAKE_LOCK_BUTTON_BRIGHT |
+			WAKE_LOCK_PROXIMITY_SCREEN_OFF |
+			WAKE_LOCK_STAY_AWAKE |
+			WAKE_LOCK_DOZE |
+			WAKE_LOCK_DRAW 
+		)) == 0 &&
+		!wakeLock.mTag.equals("RingtonePlayer") ) {
+
+		if( wakeLock.mTag.startsWith("*sync*") ||
+		    wakeLock.mTag.startsWith("*job*") 
+		  )
+		{
+			disabled = true;
+		} else {
+			
+
+		    int appid = 0;
+
+        	    if (wakeLock.mWorkSource != null && wakeLock.mWorkSource.getName(0) != null) {
+                        appid = UserHandle.getAppId(wakeLock.mWorkSource.get(0));
+		    } else {
+		        appid = UserHandle.getAppId(wakeLock.mOwnerUid);
+		    }
+
                 // If we are in idle mode, we will ignore all partial wake locks that are
                 // for application uids that are not whitelisted.
-                if (appid >= Process.FIRST_APPLICATION_UID &&
+                    if (appid >= Process.FIRST_APPLICATION_UID &&
                         Arrays.binarySearch(mDeviceIdleWhitelist, appid) < 0 &&
-                        Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) < 0 &&
-                        mUidState.get(wakeLock.mOwnerUid,
-                                ActivityManager.PROCESS_STATE_CACHED_EMPTY)
-                                > ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE) {
-                    disabled = true;
-                }
+                        Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) < 0  ) {
+                            disabled = true;
+                    }
+		}
             }
+
+
+	    String tag = wakeLock.mTag;
+
+	    if( !disabled ) {
+	        if (!mSeenWakeLocks.contains(tag)){
+                    if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK) == PowerManager.PARTIAL_WAKE_LOCK){
+                        mSeenWakeLocks.add(tag);
+                    }
+	        }
+
+	        if (mWakeLockBlockingEnabled == 1){
+		    if (mBlockedWakeLocks.contains(tag)){
+		        disabled = true;
+		    }
+	        }
+
+	    }
+
+	    if( disabled ) {
+                Slog.i(TAG, "WakeLock: (disabled) wl=" + wakeLock);
+	    } else {
+		Slog.i(TAG, "WakeLock: (enabled) wl=" + wakeLock);
+	    }
+
+
             if (wakeLock.mDisabled != disabled) {
                 wakeLock.mDisabled = disabled;
                 return true;
@@ -3926,6 +3993,24 @@ public final class PowerManagerService extends SystemService
 
         @Override // Binder call
         public boolean isDeviceIdleMode() {
+
+	    final int callingUid = Binder.getCallingUid();
+	    final int callingPid = Binder.getCallingPid();
+
+
+	    if( callingUid >= Process.FIRST_APPLICATION_UID ) {
+		if( isLightDeviceIdleModeInternal() && isDeviceIdleModeInternal() ) {
+			return false;
+		}
+	    }
+	
+
+	    if(DEBUG) Slog.d(TAG, "isDeviceIdle: uid=" + callingUid + " pid=" + callingPid);
+	    if( isGmsUid(callingUid) ) {
+	        if(DEBUG) Slog.d(TAG, "isDeviceIdle: GMS hide uid=" + callingUid + " pid=" + callingPid);
+		return false;
+	    }
+
             final long ident = Binder.clearCallingIdentity();
             try {
                 return isDeviceIdleModeInternal();
@@ -4412,4 +4497,37 @@ public final class PowerManagerService extends SystemService
                    mProximitySensor, SensorManager.SENSOR_DELAY_FASTEST);
         }
     }
+
+    private int mGmsUid = -1;
+    public int getGmsUid() {
+	return mGmsUid;
+    }
+    private void initGmsUid(Context context) {
+	    try {		
+
+	    	if( DEBUG ) Slog.w(TAG, "Initializing GMS Uid");
+		final PackageManager pm = context.getPackageManager();
+
+		ApplicationInfo ai = pm.getApplicationInfo("com.google.android.gms",0);
+		if( ai != null ) {
+		    mGmsUid = UserHandle.getAppId(ai.uid);
+		    if( DEBUG ) Slog.w(TAG, "GMS Uid=" + mGmsUid);
+	        } else {
+                    if( DEBUG ) Slog.w(TAG, "Seems GMS is not installed");
+		    mGmsUid = -1;
+		}
+	    } catch (PackageManager.NameNotFoundException e) {
+                if( DEBUG) Slog.w(TAG, "Seems GMS is not installed");
+		mGmsUid = -1;
+	    }
+    }
+
+    private boolean isGmsUid(int uid) {
+	if( mGmsUid == -1 ) return false;
+	if(  UserHandle.getAppId(uid) == getGmsUid() ) return true;
+	return false;
+    }
+
+
+
 }
