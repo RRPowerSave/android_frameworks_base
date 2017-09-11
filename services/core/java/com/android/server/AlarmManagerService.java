@@ -170,6 +170,9 @@ class AlarmManagerService extends SystemService {
     private Set<String> mBlockedAlarms = new HashSet<String>();
     private int mAlarmsBlockingEnabled;
 
+
+    PowerManager mPowerManager;
+
     /**
      * The current set of user whitelisted apps for device idle mode, meaning these are allowed
      * to freely schedule alarms.
@@ -982,8 +985,8 @@ class AlarmManagerService extends SystemService {
             setTimeZoneImpl(SystemProperties.get(TIMEZONE_PROPERTY));
         }
 
-        PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "*alarm*");
+        mPowerManager = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+        mWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "*alarm*");
 
         mTimeTickSender = PendingIntent.getBroadcastAsUser(getContext(), 0,
                 new Intent(Intent.ACTION_TIME_TICK).addFlags(
@@ -1144,26 +1147,65 @@ class AlarmManagerService extends SystemService {
         }
 
         boolean blockAlarm = false;
-        if(operation != null){
-            String tag = operation.getTag("");
+	String blockTag = callingPackage + ":" + listenerTag;
+	
+        if(operation != null) {
+            blockTag = callingPackage + ":" + operation.getTag("");
+	}
 
-            if (type == AlarmManager.RTC_WAKEUP || type == AlarmManager.ELAPSED_REALTIME_WAKEUP){
+	Slog.e(TAG, "Alarm: type=" + type + ", tag=" + blockTag + ", " + flags + ", alarmClock=" + alarmClock + ", ws=" + workSource );
 
-                Slog.e(TAG, "RTC Alarm: " + type + " " + listenerTag + " " + callingPackage + " " + tag);
+        if (operation != mTimeTickSender && alarmClock == null && ( type == AlarmManager.RTC_WAKEUP || type == AlarmManager.ELAPSED_REALTIME_WAKEUP ) ) {
 
-                if (!mSeenAlarms.contains(tag)) {
-                    mSeenAlarms.add(tag);
-                }
-                if (mAlarmsBlockingEnabled == 1 && mBlockedAlarms.contains(tag)) {
-                        if (type == AlarmManager.RTC_WAKEUP) {
-                            type = AlarmManager.RTC;
-                        } else {
-                            type = AlarmManager.ELAPSED_REALTIME;
-                        }
-                    blockAlarm = true;
+            Slog.e(TAG, "RTC Alarm: " + type + " " + blockTag);
+
+	    
+ 	    int appid = 0;
+
+
+            //if ( blockTag.contains("com.google.android.gms.gcm.HEARTBEAT_ALARM") ||
+	    //     blockTag.contains("com.google.android.gms.gcm.ACTION_CHECK_QUEUE") ||
+            //  !( blockTag.contains("com.google.android.gms.gcm") 
+	    //   | blockTag.contains("com.google.android.intent.action.GCM_RECONNECT")
+	    //   | blockTag.contains("firebase") ) ){
+
+                if (workSource != null && workSource.getName(0) != null) {
+                    appid = UserHandle.getAppId(workSource.get(0));
+	        } else {
+	            appid = UserHandle.getAppId(callingUid);
+	        }
+
+                // If we are in idle mode, we will ignore all partial wake locks that are
+                // for application uids that are not whitelisted.
+		if( appid >= Process.FIRST_APPLICATION_UID ) {
+                    if (mDeviceIdleUserWhitelist == null ) {
+			blockAlarm = true;
+		    } else if( Arrays.binarySearch(mDeviceIdleUserWhitelist, appid) < 0 ) {
+                        blockAlarm = true;
                     }
+		}
+	    //}
+
+	    
+
+	    if( !blockAlarm ) {
+                if (!mSeenAlarms.contains(blockTag)) {
+                    mSeenAlarms.add(blockTag);
                 }
-            }
+                if (mAlarmsBlockingEnabled == 1 && mBlockedAlarms.contains(blockTag)) {
+                    blockAlarm = true;
+                }
+	    }
+
+	    if( blockAlarm ) {
+                if (type == AlarmManager.RTC_WAKEUP) {
+                    type = AlarmManager.RTC;
+                } else {
+                    type = AlarmManager.ELAPSED_REALTIME;
+                }
+	    }
+
+        }
 
         synchronized (mLock) {
             if (DEBUG_BATCH) {
@@ -1174,7 +1216,7 @@ class AlarmManagerService extends SystemService {
             }
 
             if(blockAlarm){
-                Slog.e(TAG, "RTC alarm blocked: " + type + " " + listenerTag + " " + callingPackage + " " + operation.getTag(""));
+                Slog.e(TAG, "RTC alarm blocked: " + type + " " + blockTag);
             }
             setImplLocked(type, triggerAtTime, triggerElapsed, windowLength, maxElapsed,
                 interval, operation, directReceiver, listenerTag, flags, true, workSource,
@@ -1219,7 +1261,7 @@ class AlarmManagerService extends SystemService {
             // to pull that earlier if there are existing alarms that have requested to
             // bring us out of idle at an earlier time.
             if (mNextWakeFromIdle != null && a.whenElapsed > mNextWakeFromIdle.whenElapsed) {
-                a.when = a.whenElapsed = a.maxWhenElapsed = mNextWakeFromIdle.whenElapsed;
+                //a.when = a.whenElapsed = a.maxWhenElapsed = mNextWakeFromIdle.whenElapsed;
             }
             // Add fuzz to make the alarm go off some time before the actual desired time.
             final long nowElapsed = SystemClock.elapsedRealtime();
@@ -2606,9 +2648,9 @@ class AlarmManagerService extends SystemService {
             Alarm alarm = triggerList.get(i);
             final boolean allowWhileIdle = (alarm.flags&AlarmManager.FLAG_ALLOW_WHILE_IDLE) != 0;
             try {
-                if (localLOGV) {
+                //if (localLOGV) {
                     Slog.v(TAG, "sending alarm " + alarm);
-                }
+                //}
                 if (RECORD_ALARMS_IN_HISTORY) {
                     if (alarm.workSource != null && alarm.workSource.size() > 0) {
                         for (int wi=0; wi<alarm.workSource.size(); wi++) {
@@ -2884,9 +2926,20 @@ class AlarmManagerService extends SystemService {
             final long tickEventDelay = nextTime - currentTime;
 
             final WorkSource workSource = null; // Let system take blame for time tick events.
-            setImpl(ELAPSED_REALTIME, SystemClock.elapsedRealtime() + tickEventDelay, 0,
+	    if( mPowerManager == null ) {	    
+	        Slog.v(TAG, "TIME_TICK alarm: mPowermanager=null");
+	    }
+	    if( mPowerManager != null && (!mPowerManager.isLightDeviceIdleMode() && mPowerManager.isDeviceIdleMode()) ) {
+                Slog.v(TAG, "TIME_TICK alarm; non-wakeup");
+                setImpl(ELAPSED_REALTIME, SystemClock.elapsedRealtime() + tickEventDelay, 0,
                     0, mTimeTickSender, null, null, AlarmManager.FLAG_STANDALONE, workSource,
                     null, Process.myUid(), "android");
+	    } else {
+                Slog.v(TAG, "TIME_TICK alarm; wakeup");
+                setImpl(ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + tickEventDelay, 0,
+                    0, mTimeTickSender, null, null, AlarmManager.FLAG_STANDALONE | AlarmManager.FLAG_WAKE_FROM_IDLE | AlarmManager.FLAG_ALLOW_WHILE_IDLE_UNRESTRICTED , workSource,
+                    null, Process.myUid(), "android");
+	    }
         }
 
         public void scheduleDateChangedEvent() {
@@ -3089,7 +3142,7 @@ class AlarmManagerService extends SystemService {
             mBroadcastRefCount--;
 
             if (mBroadcastRefCount == 0) {
-                mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 0).sendToTarget();
+                mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 0, 0).sendToTarget();
                 if (mWakeLock.isHeld()) {
                     mWakeLock.release();
                 }
@@ -3237,7 +3290,7 @@ class AlarmManagerService extends SystemService {
                 if (!mWakeLock.isHeld()) {
                 mWakeLock.acquire();
                 }
-                mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 1).sendToTarget();
+                mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 1, 1).sendToTarget();
             }
             final InFlight inflight = new InFlight(AlarmManagerService.this,
                     alarm.operation, alarm.listener, alarm.workSource, alarm.uid,
