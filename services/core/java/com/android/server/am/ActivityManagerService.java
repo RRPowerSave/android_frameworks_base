@@ -1258,6 +1258,7 @@ public final class ActivityManagerService extends ActivityManagerNative
      * For some direct access we need to power manager.
      */
     PowerManagerInternal mLocalPowerManager;
+    PowerManager mPowerManager;
 
     /**
      * We want to hold a wake lock while running a voice interaction session, since
@@ -2954,8 +2955,8 @@ public final class ActivityManagerService extends ActivityManagerNative
         mStackSupervisor.initPowerManagement();
         mBatteryStatsService.initPowerManagement();
         mLocalPowerManager = LocalServices.getService(PowerManagerInternal.class);
-        PowerManager pm = (PowerManager)mContext.getSystemService(Context.POWER_SERVICE);
-        mVoiceWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "*voice*");
+        mPowerManager = (PowerManager)mContext.getSystemService(Context.POWER_SERVICE);
+        mVoiceWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "*voice*");
         mVoiceWakeLock.setReferenceCounted(false);
     }
 
@@ -8147,8 +8148,11 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     int checkAllowBackgroundLocked(int uid, String packageName, int callingPid,
             boolean allowWhenForeground) {
+
+	if( mPowerManager.isLightDeviceIdleMode() ) return ActivityManager.APP_START_MODE_NORMAL;
+	if( !mPowerManager.isDeviceIdleMode() ) return ActivityManager.APP_START_MODE_NORMAL;
         UidRecord uidRec = mActiveUids.get(uid);
-        if (!mLenientBackgroundCheck) {
+        /*if (!mLenientBackgroundCheck) {
             if (!allowWhenForeground || uidRec == null
                     || uidRec.curProcState >= ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND) {
                 if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid,
@@ -8157,8 +8161,8 @@ public final class ActivityManagerService extends ActivityManagerNative
                 }
             }
 
-        } else if (uidRec == null || uidRec.idle) {
-            if (callingPid >= 0) {
+        } else if (uidRec == null || uidRec.idle) {*/
+            /*if (callingPid >= 0) {
                 ProcessRecord proc;
                 synchronized (mPidsSelfLocked) {
                     proc = mPidsSelfLocked.get(callingPid);
@@ -8168,12 +8172,12 @@ public final class ActivityManagerService extends ActivityManagerNative
                     // to go through.
                     return ActivityManager.APP_START_MODE_NORMAL;
                 }
-            }
+            }*/
             if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid, packageName)
                     != AppOpsManager.MODE_ALLOWED) {
                 return ActivityManager.APP_START_MODE_DELAYED;
             }
-        }
+        /*}*/
         return ActivityManager.APP_START_MODE_NORMAL;
     }
 
