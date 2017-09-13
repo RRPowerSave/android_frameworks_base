@@ -71,7 +71,7 @@ import android.view.inputmethod.InputMethodManagerInternal;
 final class Notifier {
     private static final String TAG = "PowerManagerNotifier";
 
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
 
     private static final int INTERACTIVE_STATE_UNKNOWN = 0;
     private static final int INTERACTIVE_STATE_AWAKE = 1;
