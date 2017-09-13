@@ -1226,6 +1226,8 @@ public final class PowerManagerService extends SystemService
                 wakeLock.mHistoryTag = historyTag;
                 wakeLock.updateWorkSource(ws);
             }
+
+	    updateWakeLockDisabledStatesLocked();
         }
     }
 
@@ -1245,6 +1247,7 @@ public final class PowerManagerService extends SystemService
                 mNotifier.onWakeLockAcquired(wakeLock.mFlags, wakeLock.mTag, wakeLock.mPackageName,
                         wakeLock.mOwnerUid, wakeLock.mOwnerPid, wakeLock.mWorkSource,
                         wakeLock.mHistoryTag);
+		wakeLock.mNotifiedAcquired = true;
                 restartNofifyLongTimerLocked(wakeLock);
             }
         }
@@ -1299,11 +1302,14 @@ public final class PowerManagerService extends SystemService
     protected void notifyWakeLockReleasedLocked(WakeLock wakeLock) {
         if (mSystemReady) {
             /*if (!wakeLock.isBlocked()){*/
+	    if( wakeLock.mNotifiedAcquired ) {
                 wakeLock.mAcquireTime = 0;
+		wakeLock.mNotifiedAcquired = false;
                 mNotifier.onWakeLockReleased(wakeLock.mFlags, wakeLock.mTag,
                         wakeLock.mPackageName, wakeLock.mOwnerUid, wakeLock.mOwnerPid,
                         wakeLock.mWorkSource, wakeLock.mHistoryTag);
                 notifyWakeLockLongFinishedLocked(wakeLock);
+		}
             /*}*/
         }
     }
@@ -2939,7 +2945,7 @@ public final class PowerManagerService extends SystemService
 
 		    int appid = 0;
 
-        	    if (wakeLock.mWorkSource != null && wakeLock.mWorkSource.getName(0) != null) {
+        	    if (wakeLock.mWorkSource != null && wakeLock.mWorkSource.get(0) != 0) {
                         appid = UserHandle.getAppId(wakeLock.mWorkSource.get(0));
 		    } else {
 		        appid = UserHandle.getAppId(wakeLock.mOwnerUid);
@@ -2947,10 +2953,21 @@ public final class PowerManagerService extends SystemService
 
                 // If we are in idle mode, we will ignore all partial wake locks that are
                 // for application uids that are not whitelisted.
-                    if (appid >= Process.FIRST_APPLICATION_UID &&
-                        Arrays.binarySearch(mDeviceIdleWhitelist, appid) < 0 &&
-                        Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) < 0  ) {
-                            disabled = true;
+		    boolean enabled = false;
+
+			
+                    if (appid < Process.FIRST_APPLICATION_UID ) {
+			enabled = true;
+	                Slog.i(TAG, "WakeLock: (enabled) system app wl=" + wakeLock);
+		    } else if( Arrays.binarySearch(mDeviceIdleWhitelist, appid) >= 0 ) {
+			enabled = true;
+	                Slog.i(TAG, "WakeLock: (enabled) whitelist wl=" + wakeLock);
+		    } else if( Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) >= 0  )  {
+			enabled = true;
+	                Slog.i(TAG, "WakeLock: (enabled) temp whitelist wl=" + wakeLock);
+		    }
+		    if( !enabled ) {
+                        disabled = true;
                     }
 		}
             }
@@ -2976,7 +2993,6 @@ public final class PowerManagerService extends SystemService
 	    if( disabled ) {
                 Slog.i(TAG, "WakeLock: (disabled) wl=" + wakeLock);
 	    } else {
-		Slog.i(TAG, "WakeLock: (enabled) wl=" + wakeLock);
 	    }
 
 
