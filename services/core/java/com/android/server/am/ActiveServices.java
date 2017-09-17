@@ -352,7 +352,7 @@ public final class ActiveServices {
                 // Before going further -- if this app is not allowed to run in the
                 // background, then at this point we aren't going to let it period.
                 final int allowed = mAm.checkAllowBackgroundLocked(
-                        r.appInfo.uid, r.packageName, callingPid, true);
+                        r.appInfo.uid, r.packageName, callingPid, true, service);
                 if (allowed != ActivityManager.APP_START_MODE_NORMAL) {
                     Slog.w(TAG, "Background start not allowed: service "
                             + service + " to " + r.name.flattenToShortString()
@@ -588,6 +588,49 @@ public final class ActiveServices {
 
         return 0;
     }
+
+    void stopInIdleLocked() {
+        // Stop all services with RUN_IN_BACKGROUND disabled
+
+        ArrayList<ServiceRecord> stopping = null;
+
+        for (int j = mServiceMap.size() - 1; j >= 0; j--) {
+            ServiceMap services = mServiceMap.valueAt(j); 
+            if (services != null) {
+                for (int i=services.mServicesByName.size()-1; i>=0; i--) {
+                    ServiceRecord service = services.mServicesByName.valueAt(i);
+                    if (service.startRequested) {
+               		if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "stopService: (forced by idle) check " + service + " intent=" + service.intent.getIntent());
+			if(mAm.checkAllowBackgroundLocked(service.appInfo.uid, service.packageName, -1, 
+                                   true, service.intent.getIntent()) != ActivityManager.APP_START_MODE_NORMAL  ) {
+               		    
+		 	    Slog.v(TAG_SERVICE, "stopService: (forced by idle) block " + service + " intent=" + service.intent.getIntent());
+
+                            if (stopping == null) {
+                                stopping = new ArrayList<>();
+                            }
+               		    services.ensureNotStartingBackground(service);
+                            stopping.add(service);
+                        } else {
+               		    Slog.v(TAG_SERVICE, "stopService: (forced by idle) allow " + service + " intent=" + service.intent.getIntent());
+			}
+
+                    }
+                }
+           }
+       	}
+	if (stopping != null) {
+            for (int i=stopping.size()-1; i>=0; i--) {
+                ServiceRecord service = stopping.get(i);
+                service.delayed = false;
+      	        Slog.v(TAG_SERVICE, "stopService: (forced by idle) stop " + service + " intent=" + service.intent.getIntent());
+                // stopServiceLocked(service);
+		bringDownServiceLocked(service);	
+            }
+        }
+       
+    }
+
 
     void stopInBackgroundLocked(int uid) {
         // Stop all services associated with this uid due to it going to the background

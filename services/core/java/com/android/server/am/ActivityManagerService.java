@@ -44,6 +44,7 @@ import com.android.internal.util.Preconditions;
 import com.android.server.AppOpsService;
 import com.android.server.AttributeCache;
 import com.android.server.DeviceIdleController;
+import com.android.server.power.PowerManagerService;
 import com.android.server.IntentResolver;
 import com.android.server.LocalServices;
 import com.android.server.LockGuard;
@@ -1142,6 +1143,8 @@ public final class ActivityManagerService extends ActivityManagerNative
      * Access to DeviceIdleController service.
      */
     DeviceIdleController.LocalService mLocalDeviceIdleController;
+
+    boolean mDeviceIdleMode = false;
 
     /**
      * Information about and control over application operations
@@ -2864,7 +2867,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                         if (op == AppOpsManager.OP_RUN_IN_BACKGROUND && packageName != null) {
                             if (mAppOpsService.checkOperation(op, uid, packageName)
                                     != AppOpsManager.MODE_ALLOWED) {
-                                runInBackgroundDisabled(uid);
+                                //runInBackgroundDisabled(uid);
                             }
                         }
                     }
@@ -7065,6 +7068,19 @@ public final class ActivityManagerService extends ActivityManagerNative
             }
         }, dumpheapFilter);
 
+
+        IntentFilter idleFilter = new IntentFilter();
+	idleFilter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+        mContext.registerReceiver(new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+	    	    mDeviceIdleMode = mPowerManager.isDeviceIdleMode();
+                    if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "DeviceIdleMode changed :" + mDeviceIdleMode);
+		    if( mDeviceIdleMode ) runInIdleDisabled();
+		}
+            
+        }, idleFilter);
+
         // Let system services know.
         mSystemServiceManager.startBootPhase(SystemService.PHASE_BOOT_COMPLETED);
 
@@ -8142,17 +8158,29 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     public int getAppStartMode(int uid, String packageName) {
         synchronized (this) {
-            return checkAllowBackgroundLocked(uid, packageName, -1, true);
+            return checkAllowBackgroundLocked(uid, packageName, -1, true, null);
         }
     }
 
     int checkAllowBackgroundLocked(int uid, String packageName, int callingPid,
-            boolean allowWhenForeground) {
+            boolean allowWhenForeground, Intent intent) {
 
-	if( mPowerManager.isLightDeviceIdleMode() ) return ActivityManager.APP_START_MODE_NORMAL;
 	if( !mPowerManager.isDeviceIdleMode() ) return ActivityManager.APP_START_MODE_NORMAL;
+	if( PowerManagerService.isGmsUid(uid) ) {
+	    if( intent == null ) return ActivityManager.APP_START_MODE_NORMAL;
+	    if( PowerManagerService.isGcmGmsService(intent) ) return ActivityManager.APP_START_MODE_NORMAL;
+	}
+	
+
+	if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid,
+                packageName) != AppOpsManager.MODE_ALLOWED) {
+            return ActivityManager.APP_START_MODE_DISABLED;
+        }
+
+
+	/*
         UidRecord uidRec = mActiveUids.get(uid);
-        /*if (!mLenientBackgroundCheck) {
+        if (!mLenientBackgroundCheck) {
             if (!allowWhenForeground || uidRec == null
                     || uidRec.curProcState >= ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND) {
                 if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid,
@@ -8161,8 +8189,8 @@ public final class ActivityManagerService extends ActivityManagerNative
                 }
             }
 
-        } else if (uidRec == null || uidRec.idle) {*/
-            /*if (callingPid >= 0) {
+        } else if (uidRec == null || uidRec.idle) {
+            if (callingPid >= 0) {
                 ProcessRecord proc;
                 synchronized (mPidsSelfLocked) {
                     proc = mPidsSelfLocked.get(callingPid);
@@ -8172,12 +8200,13 @@ public final class ActivityManagerService extends ActivityManagerNative
                     // to go through.
                     return ActivityManager.APP_START_MODE_NORMAL;
                 }
-            }*/
+            }
             if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid, packageName)
                     != AppOpsManager.MODE_ALLOWED) {
                 return ActivityManager.APP_START_MODE_DELAYED;
             }
-        /*}*/
+        }*/
+	
         return ActivityManager.APP_START_MODE_NORMAL;
     }
 
@@ -21764,6 +21793,13 @@ public final class ActivityManagerService extends ActivityManagerNative
                         nextTime + BACKGROUND_SETTLE_TIME - nowElapsed);
             }
         }
+    }
+
+    final void runInIdleDisabled() {
+        synchronized (this) {
+		mServices.stopInIdleLocked();
+		updateOomAdjLocked();
+	}
     }
 
     final void runInBackgroundDisabled(int uid) {

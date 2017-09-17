@@ -595,7 +595,7 @@ public final class BroadcastQueue {
         }
         if (!skip) {
             final int allowed = mService.checkAllowBackgroundLocked(filter.receiverList.uid,
-                    filter.packageName, -1, true);
+                    filter.packageName, -1, true, r.intent);
             if (allowed == ActivityManager.APP_START_MODE_DISABLED) {
                 Slog.w(TAG, "Background execution not allowed: receiving "
                         + r.intent
@@ -1156,7 +1156,7 @@ public final class BroadcastQueue {
             if (!skip) {
                 final int allowed = mService.checkAllowBackgroundLocked(
                         info.activityInfo.applicationInfo.uid, info.activityInfo.packageName, -1,
-                        false);
+                        false, r.intent);
                 if (allowed != ActivityManager.APP_START_MODE_NORMAL) {
                     // We won't allow this receiver to be launched if the app has been
                     // completely disabled from launches, or it was not explicitly sent
