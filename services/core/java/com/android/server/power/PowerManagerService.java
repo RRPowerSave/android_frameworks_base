@@ -1363,7 +1363,8 @@ public final class PowerManagerService extends SystemService
         Trace.traceBegin(Trace.TRACE_TAG_POWER, "userActivity");
         try {
             if (eventTime > mLastInteractivePowerHintTime) {
-                powerHintInternal(POWER_HINT_INTERACTION, 0);
+                powerHintInternal(POWER_HINT_INTERACTION, 0); //SDV!!! 0->1
+            	powerHintInternal(POWER_HINT_LOW_POWER, 0);
                 mLastInteractivePowerHintTime = eventTime;
             }
 
@@ -2002,6 +2003,7 @@ public final class PowerManagerService extends SystemService
                                 mButtonOn = false;
                             }
                         }
+			
                     }
                 }
                 if (mUserActivitySummary == 0
@@ -2073,9 +2075,12 @@ public final class PowerManagerService extends SystemService
      */
     private void handleUserActivityTimeout() { // runs on handler thread
         synchronized (mLock) {
-            if (DEBUG_SPEW) {
+            if (DEBUG) {
                 Slog.d(TAG, "handleUserActivityTimeout");
             }
+
+            //powerHintInternal(POWER_HINT_INTERACTION, 0);
+	    powerHintInternal(POWER_HINT_LOW_POWER, (mLightDeviceIdleMode | mDeviceIdleMode) ? 1 : 0);
 
             mDirty |= DIRTY_USER_ACTIVITY;
             updatePowerStateLocked();
@@ -2933,7 +2938,11 @@ public final class PowerManagerService extends SystemService
 			WAKE_LOCK_DOZE |
 			WAKE_LOCK_DRAW 
 		)) == 0 &&
-		!wakeLock.mTag.equals("RingtonePlayer") ) {
+		!wakeLock.mTag.equals("RingtonePlayer") &&
+		!wakeLock.mTag.equals("AudioMix") &&
+		!wakeLock.mTag.equals("GOOGLE_C2DM") &&
+		!wakeLock.mTag.equals("GCM_READ") &&
+		!wakeLock.mTag.contains("GcmIntent") ) {
 
 		if( wakeLock.mTag.startsWith("*sync*") ||
 		    wakeLock.mTag.startsWith("*job*") 
@@ -3130,6 +3139,12 @@ public final class PowerManagerService extends SystemService
     }
 
     private void powerHintInternal(int hintId, int data) {
+        Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
+
+        RuntimeException here = new RuntimeException("here");
+        here.fillInStackTrace();
+        Slog.v(TAG, "called from: ", here);
+
         nativeSendPowerHint(hintId, data);
     }
 
@@ -4014,11 +4029,6 @@ public final class PowerManagerService extends SystemService
 	    final int callingPid = Binder.getCallingPid();
 
 
-	    if( callingUid >= Process.FIRST_APPLICATION_UID ) {
-		if( isLightDeviceIdleModeInternal() && isDeviceIdleModeInternal() ) {
-			return false;
-		}
-	    }
 	
 
 	    if(DEBUG) Slog.d(TAG, "isDeviceIdle: uid=" + callingUid + " pid=" + callingPid);
@@ -4029,6 +4039,11 @@ public final class PowerManagerService extends SystemService
 
             final long ident = Binder.clearCallingIdentity();
             try {
+	        if( callingUid >= Process.FIRST_APPLICATION_UID ) {
+		    if( isLightDeviceIdleModeInternal() && isDeviceIdleModeInternal() ) {
+			return false;
+		    }
+	        }
                 return isDeviceIdleModeInternal();
             } finally {
                 Binder.restoreCallingIdentity(ident);
@@ -4514,11 +4529,12 @@ public final class PowerManagerService extends SystemService
         }
     }
 
-    private int mGmsUid = -1;
-    public int getGmsUid() {
+    private static int mGmsUid = -1;
+    public static int getGmsUid() {
 	return mGmsUid;
     }
-    private void initGmsUid(Context context) {
+
+    public static void initGmsUid(Context context) {
 	    try {		
 
 	    	if( DEBUG ) Slog.w(TAG, "Initializing GMS Uid");
@@ -4538,12 +4554,47 @@ public final class PowerManagerService extends SystemService
 	    }
     }
 
-    private boolean isGmsUid(int uid) {
+    public static boolean isGmsUid(int uid) {
 	if( mGmsUid == -1 ) return false;
 	if(  UserHandle.getAppId(uid) == getGmsUid() ) return true;
 	return false;
     }
 
+    public static boolean isGcmGmsService(Intent intent) {
+
+	ComponentName cmp = intent.getComponent();
+	if( cmp != null ) {
+	    String cls = cmp.toString();
+ 	    if( cls != null ) {
+		if( cls.contains("com.google.android.gms/.gcm.") ) return true;
+	        if( cls.contains(".gcm.GcmService") ) return true;
+	        if( cls.contains(".auth.easyunlock.authorization.InitializerIntentService") ) return true;
+	        if( cls.contains(".gcm.nts.SchedulerInternalReceiver") ) return true;
+        	if( cls.contains(".tapandpay.gcmtask.TapAndPayGcmTaskService") ) return true;
+	        //if( cls.contains(".phenotype.service.PhenotypeService") ) return true;
+ 	        //if( cls.contains(".chimera.GmsIntentOperationService") ) return true;
+	        //if( cls.contains(".udc.service.UdcContextInitService") ) return true;
+	        //if( cls.contains(".chimera.PersistentBoundBrokerService") ) return true;
+	        //if( cls.contains(".instantapps.routing.DomainFilterUpdateService") ) return true;
+	        //if( cls.contains(".auth.authzen.api.service.internaldata.CryptauthInternalDataService") ) return true;
+	        //if( cls.contains(".auth.api.credentials.sync.CredentialSyncReceiverService") ) return true;
+	        //if( cls.contains(".auth.setup.devicesignals.LockScreenService") ) return true;
+	        //if( cls.contains(".service.ContextManagerService") ) return true;
+	    }
+	}
+
+	String act = intent.getAction();
+	if( act != null ) {
+            //Slog.d(TAG, "checkAllowIntent: act=" + act );
+	    if( act.contains("com.google.android.c2dm") ) return true;
+	    if( act.contains("com.google.android.gms.gcm") ) return true;
+	    if( act.contains("android.net.conn.DATA_ACTIVITY_CHANGE") ) return true;
+	    if( act.contains("com.google.android.intent.action.GCM_RECONNECT") ) return true;
+            //Slog.d(TAG, "checkAllowIntent: act=" + act + " blocked");
+	}
+        //Slog.d(TAG, "checkAllowIntent: blocked intent=" + intent );
+	return false;
+    }
 
 
 }
