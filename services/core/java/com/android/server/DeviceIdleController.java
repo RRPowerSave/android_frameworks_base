@@ -1067,7 +1067,7 @@ public class DeviceIdleController extends SystemService
                         deepChanged = mLocalPowerManager.setDeviceIdleMode(true);
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
                     } else {
-                        deepChanged = mLocalPowerManager.setDeviceIdleMode(true);
+                        deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(true);
                     }
                     try {
