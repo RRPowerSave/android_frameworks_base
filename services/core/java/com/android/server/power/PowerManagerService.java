@@ -114,8 +114,8 @@ public final class PowerManagerService extends SystemService
         implements Watchdog.Monitor {
     private static final String TAG = "PowerManagerService";
 
-    private static final boolean DEBUG = true;
-    private static final boolean DEBUG_SPEW = DEBUG && true;
+    private static final boolean DEBUG = false;
+    private static final boolean DEBUG_SPEW = DEBUG && false;
 
     // Message: Sent when a user activity timeout occurs to update the power state.
     private static final int MSG_USER_ACTIVITY_TIMEOUT = 1;
@@ -1004,7 +1004,7 @@ public final class PowerManagerService extends SystemService
 
         if (mLowPowerModeEnabled != lowPowerModeEnabled) {
             mLowPowerModeEnabled = lowPowerModeEnabled;
-            powerHintInternal(POWER_HINT_LOW_POWER, lowPowerModeEnabled ? 1 : 0);
+            powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
             postAfterBootCompleted(new Runnable() {
                 @Override
                 public void run() {
@@ -1364,7 +1364,8 @@ public final class PowerManagerService extends SystemService
         try {
             if (eventTime > mLastInteractivePowerHintTime) {
                 powerHintInternal(POWER_HINT_INTERACTION, 0); //SDV!!! 0->1
-            	powerHintInternal(POWER_HINT_LOW_POWER, 0);
+            	// powerHintInternal(POWER_HINT_LOW_POWER, 0);
+                powerHintInternal(POWER_HINT_LOW_POWER, 0);
                 mLastInteractivePowerHintTime = eventTime;
             }
 
@@ -2080,7 +2081,9 @@ public final class PowerManagerService extends SystemService
             }
 
             //powerHintInternal(POWER_HINT_INTERACTION, 0);
-	    powerHintInternal(POWER_HINT_LOW_POWER, (mLightDeviceIdleMode | mDeviceIdleMode) ? 1 : 0);
+            powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
+
+	    //powerHintInternal(POWER_HINT_LOW_POWER, (mLightDeviceIdleMode || mDeviceIdleMode) ? 1 : 0);
 
             mDirty |= DIRTY_USER_ACTIVITY;
             updatePowerStateLocked();
@@ -2604,7 +2607,7 @@ public final class PowerManagerService extends SystemService
     private void updateSuspendBlockerLocked() {
         final boolean needWakeLockSuspendBlocker = ((mWakeLockSummary & WAKE_LOCK_CPU) != 0);
         final boolean needDisplaySuspendBlocker = needDisplaySuspendBlockerLocked();
-        final boolean autoSuspend = !needDisplaySuspendBlocker;
+        final boolean autoSuspend = true; //!needDisplaySuspendBlocker;
         final boolean interactive = mDisplayPowerRequest.isBrightOrDim();
 
         // Disable auto-suspend if needed.
@@ -2839,10 +2842,12 @@ public final class PowerManagerService extends SystemService
     boolean setDeviceIdleModeInternal(boolean enabled) {
         synchronized (mLock) {
             if (mDeviceIdleMode == enabled) {
+                powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
                 return false;
             }
             mDeviceIdleMode = enabled;
-            powerHintInternal(POWER_HINT_LOW_POWER, mDeviceIdleMode ? 1 : 0);
+            //powerHintInternal(POWER_HINT_LOW_POWER, mDeviceIdleMode ? 1 : 0);
+            powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
             updateWakeLockDisabledStatesLocked();
         }
         if (enabled) {
@@ -2857,7 +2862,8 @@ public final class PowerManagerService extends SystemService
         synchronized (mLock) {
             if (mLightDeviceIdleMode != enabled) {
                 mLightDeviceIdleMode = enabled;
-            	powerHintInternal(POWER_HINT_LOW_POWER, mLightDeviceIdleMode ? 1 : 0);
+            	//powerHintInternal(POWER_HINT_LOW_POWER, mLightDeviceIdleMode ? 1 : 0);
+                powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
                 return true;
             }
             return false;
@@ -3139,12 +3145,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private void powerHintInternal(int hintId, int data) {
-        Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
-
-        RuntimeException here = new RuntimeException("here");
-        here.fillInStackTrace();
-        Slog.v(TAG, "called from: ", here);
-
+        //Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
         nativeSendPowerHint(hintId, data);
     }
 
@@ -4028,8 +4029,6 @@ public final class PowerManagerService extends SystemService
 	    final int callingUid = Binder.getCallingUid();
 	    final int callingPid = Binder.getCallingPid();
 
-
-	
 
 	    if(DEBUG) Slog.d(TAG, "isDeviceIdle: uid=" + callingUid + " pid=" + callingPid);
 	    if( isGmsUid(callingUid) ) {

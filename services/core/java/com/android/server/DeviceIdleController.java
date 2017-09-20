@@ -64,6 +64,7 @@ import android.os.ServiceManager;
 import android.os.ShellCommand;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.SystemProperties;
 import android.provider.Settings;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -107,6 +108,7 @@ import java.util.Arrays;
 public class DeviceIdleController extends SystemService
         implements AnyMotionDetector.DeviceIdleCallback {
     private static final String TAG = "DeviceIdleController";
+    private static final String SEMIIDLE_SYSTEM_PROPERTY = "persist.semiidle.enabled";
 
     private static final boolean DEBUG = true;
 
@@ -802,13 +804,13 @@ public class DeviceIdleController extends SystemService
                     Slog.e(TAG, "Bad device idle settings", e);
                 }
 
-                LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = 15000L;
+                LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = 3000L;
                 LIGHT_PRE_IDLE_TIMEOUT = 3000L;
                 LIGHT_IDLE_TIMEOUT = 60*60*1000L;
                 LIGHT_IDLE_FACTOR = 1.0F;
                 LIGHT_MAX_IDLE_TIMEOUT = 60*60*1000L;
-                LIGHT_IDLE_MAINTENANCE_MIN_BUDGET = 5000L;
-                LIGHT_IDLE_MAINTENANCE_MAX_BUDGET = 15000L;
+                LIGHT_IDLE_MAINTENANCE_MIN_BUDGET = 3000L;
+                LIGHT_IDLE_MAINTENANCE_MAX_BUDGET = 10000L;
                 MIN_LIGHT_MAINTENANCE_TIME = 5000L;
                 MIN_DEEP_MAINTENANCE_TIME = 5000L;
                 INACTIVE_TIMEOUT = 5000L;
@@ -1068,7 +1070,9 @@ public class DeviceIdleController extends SystemService
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
                     } else {
                         deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
-                        lightChanged = mLocalPowerManager.setLightDeviceIdleMode(true);
+			boolean semiIdleEnabled = SystemProperties.getBoolean(SEMIIDLE_SYSTEM_PROPERTY, true);
+            		if (DEBUG) Slog.d(TAG, "SemiIdle mode enabled=" + semiIdleEnabled);
+                        lightChanged = mLocalPowerManager.setLightDeviceIdleMode(semiIdleEnabled);
                     }
                     try {
                         // mNetworkPolicyManager.setDeviceIdleMode(true);

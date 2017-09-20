@@ -7074,9 +7074,9 @@ public final class ActivityManagerService extends ActivityManagerNative
         mContext.registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-	    	    mDeviceIdleMode = mPowerManager.isDeviceIdleMode();
+	    	    //mDeviceIdleMode = mPowerManager.isDeviceIdleMode();
                     if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "DeviceIdleMode changed :" + mDeviceIdleMode);
-		    if( mDeviceIdleMode ) runInIdleDisabled();
+		    //if( mDeviceIdleMode ) runInIdleDisabled();
 		}
             
         }, idleFilter);
@@ -8165,7 +8165,8 @@ public final class ActivityManagerService extends ActivityManagerNative
     int checkAllowBackgroundLocked(int uid, String packageName, int callingPid,
             boolean allowWhenForeground, Intent intent) {
 
-	if( !mPowerManager.isDeviceIdleMode() ) return ActivityManager.APP_START_MODE_NORMAL;
+	if( mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
+	if( !mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
 	if( PowerManagerService.isGmsUid(uid) ) {
 	    if( intent == null ) return ActivityManager.APP_START_MODE_NORMAL;
 	    if( PowerManagerService.isGcmGmsService(intent) ) return ActivityManager.APP_START_MODE_NORMAL;
@@ -21491,6 +21492,26 @@ public final class ActivityManagerService extends ActivityManagerNative
                         mNumNonCachedProcs++;
                         break;
                 }
+
+
+		if( mDeviceIdleMode && !app.persistent && !PowerManagerService.isGmsUid(app.info.uid) ) {
+                    try {
+	                if (mAppOpsService != null ) {
+	                    if( mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, app.info.uid, app.info.packageName)
+	                        != AppOpsManager.MODE_ALLOWED) {
+			            app.kill("app not allowed to run in idle mode", true);
+	            	            //if( DEBUG ) Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+		            } else {
+	                            //if( DEBUG ) Slog.d(TAG, "checkKeepRunnig: allowed: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+	                    }
+			}
+	            } catch (SecurityException e) {
+	                Slog.d(TAG, "checkKeepRunnig: security exception checking : pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+	                Slog.d(TAG, "Ex: " + e);
+	            }
+		}
+	
+		
 
                 if (app.isolated && app.services.size() <= 0) {
                     // If this is an isolated process, and there are no

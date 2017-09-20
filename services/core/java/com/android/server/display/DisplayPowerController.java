@@ -696,7 +696,7 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
                 // Use current auto-brightness value and slowly adjust to changes.
                 brightness = clampScreenBrightness(brightness);
                 if (mAppliedAutoBrightness && !autoBrightnessAdjustmentChanged) {
-                    slowChange = true; // slowly adapt to auto-brightness
+                    //slowChange = true; // slowly adapt to auto-brightness
                 }
                 mAppliedAutoBrightness = true;
             } else {

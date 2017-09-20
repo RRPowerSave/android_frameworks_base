@@ -1525,6 +1525,10 @@ public final class ActiveServices {
             boolean allowCancel) {
         boolean canceled = false;
 
+	/*if( !canceled ) {
+	    return false;
+	}*/
+
         if (mAm.isShuttingDownLocked()) {
             Slog.w(TAG, "Not scheduling restart of crashed service " + r.shortName
                     + " - system is shutting down");
