@@ -103,12 +103,12 @@ class AlarmManagerService extends SystemService {
     static final int TYPE_NONWAKEUP_MASK = 0x1; // low bit => non-wakeup
 
     static final String TAG = "AlarmManager";
-    static final boolean localLOGV = true;
+    static final boolean localLOGV = false;
     static final boolean DEBUG_BATCH = localLOGV || false;
     static final boolean DEBUG_VALIDATE = localLOGV || false;
-    static final boolean DEBUG_ALARM_CLOCK = localLOGV || true;
-    static final boolean DEBUG_LISTENER_CALLBACK = localLOGV || true;
-    static final boolean RECORD_ALARMS_IN_HISTORY = true;
+    static final boolean DEBUG_ALARM_CLOCK = localLOGV || false;
+    static final boolean DEBUG_LISTENER_CALLBACK = localLOGV || false;
+    static final boolean RECORD_ALARMS_IN_HISTORY = false;
     static final boolean RECORD_DEVICE_IDLE_ALARMS = false;
     static final int ALARM_EVENT = 1;
     static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
@@ -2685,7 +2685,7 @@ class AlarmManagerService extends SystemService {
                 int result = waitForAlarm(mNativeData);
                 mLastWakeup = SystemClock.elapsedRealtime();
 
-                Slog.v(TAG, "Alarms step:" + result);
+                //Slog.v(TAG, "Alarms step:" + result);
 
                 triggerList.clear();
 
