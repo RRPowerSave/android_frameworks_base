@@ -7074,9 +7074,9 @@ public final class ActivityManagerService extends ActivityManagerNative
         mContext.registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-	    	    //mDeviceIdleMode = mPowerManager.isDeviceIdleMode();
+	    	    mDeviceIdleMode = mPowerManager.isDeviceIdleMode();
                     if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "DeviceIdleMode changed :" + mDeviceIdleMode);
-		    //if( mDeviceIdleMode ) runInIdleDisabled();
+		    if( mDeviceIdleMode ) runInIdleDisabled();
 		}
             
         }, idleFilter);
@@ -8165,7 +8165,7 @@ public final class ActivityManagerService extends ActivityManagerNative
     int checkAllowBackgroundLocked(int uid, String packageName, int callingPid,
             boolean allowWhenForeground, Intent intent) {
 
-	if( mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
+	// if( mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
 	if( !mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
 	if( PowerManagerService.isGmsUid(uid) ) {
 	    if( intent == null ) return ActivityManager.APP_START_MODE_NORMAL;
@@ -21494,17 +21494,27 @@ public final class ActivityManagerService extends ActivityManagerNative
                 }
 
 
-		if( mDeviceIdleMode && !app.persistent && !PowerManagerService.isGmsUid(app.info.uid) ) {
+		
+		if( mDeviceIdleMode && !PowerManagerService.isGmsUid(app.info.uid) ) {
                     try {
-	                if (mAppOpsService != null ) {
-	                    if( mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, app.info.uid, app.info.packageName)
-	                        != AppOpsManager.MODE_ALLOWED) {
-			            app.kill("app not allowed to run in idle mode", true);
-	            	            //if( DEBUG ) Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
-		            } else {
-	                            //if( DEBUG ) Slog.d(TAG, "checkKeepRunnig: allowed: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
-	                    }
-			}
+       			UidRecord uidRec = mActiveUids.get(app.info.uid);
+       			if( uidRec != null ) {
+	                    if (mAppOpsService != null && !uidRec.idle) {
+	                        if( mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, app.info.uid, app.info.packageName)
+	                            != AppOpsManager.MODE_ALLOWED) {
+                		        // This uid is actually running...  should it be considered background now?
+                		        uidRec.idle = true;
+                    			doStopUidLocked(uidRec.uid, uidRec);
+			                //app.kill("app not allowed to run in idle mode", true);
+	            	                //Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+		                } else {
+	                            //Slog.d(TAG, "checkKeepRunnig: allowed: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+	                        }
+			    }
+                        } else {
+                	    // This uid isn't actually running...  still send a report about it being "stopped".
+                	    // doStopUidLocked(app.info.uid, null);
+        		}
 	            } catch (SecurityException e) {
 	                Slog.d(TAG, "checkKeepRunnig: security exception checking : pkg=" + app.info.packageName + ", uid=" + app.info.uid);
 	                Slog.d(TAG, "Ex: " + e);
