@@ -114,7 +114,7 @@ public final class PowerManagerService extends SystemService
         implements Watchdog.Monitor {
     private static final String TAG = "PowerManagerService";
 
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
     private static final boolean DEBUG_SPEW = DEBUG && false;
 
     // Message: Sent when a user activity timeout occurs to update the power state.
@@ -601,7 +601,7 @@ public final class PowerManagerService extends SystemService
             mDisplaySuspendBlocker = createSuspendBlockerLocked("PowerManagerService.Display");
             mDisplaySuspendBlocker.acquire();
             mHoldingDisplaySuspendBlocker = true;
-            mHalAutoSuspendModeEnabled = false;
+            mHalAutoSuspendModeEnabled = true;
             mHalInteractiveModeEnabled = true;
 
             mWakefulness = WAKEFULNESS_AWAKE;
@@ -1349,7 +1349,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private boolean userActivityNoUpdateLocked(long eventTime, int event, int flags, int uid) {
-        if (DEBUG_SPEW) {
+        if (DEBUG) {
             Slog.d(TAG, "userActivityNoUpdateLocked: eventTime=" + eventTime
                     + ", event=" + event + ", flags=0x" + Integer.toHexString(flags)
                     + ", uid=" + uid);
@@ -1366,6 +1366,7 @@ public final class PowerManagerService extends SystemService
                 powerHintInternal(POWER_HINT_INTERACTION, 0); //SDV!!! 0->1
             	// powerHintInternal(POWER_HINT_LOW_POWER, 0);
                 powerHintInternal(POWER_HINT_LOW_POWER, 0);
+	    	mUserInactive = false;
                 mLastInteractivePowerHintTime = eventTime;
             }
 
@@ -1872,9 +1873,9 @@ public final class PowerManagerService extends SystemService
             // Infer implied wake locks where necessary based on the current state.
             if ((mWakeLockSummary & (WAKE_LOCK_SCREEN_BRIGHT | WAKE_LOCK_SCREEN_DIM)) != 0) {
                 if (mWakefulness == WAKEFULNESS_AWAKE) {
-                    mWakeLockSummary |= WAKE_LOCK_CPU | WAKE_LOCK_STAY_AWAKE;
+                    mWakeLockSummary |= /*WAKE_LOCK_CPU | */ WAKE_LOCK_STAY_AWAKE;
                 } else if (mWakefulness == WAKEFULNESS_DREAMING) {
-                    mWakeLockSummary |= WAKE_LOCK_CPU;
+                    //mWakeLockSummary |= WAKE_LOCK_CPU;
                 }
             }
             if ((mWakeLockSummary & WAKE_LOCK_DRAW) != 0) {
@@ -2066,6 +2067,8 @@ public final class PowerManagerService extends SystemService
         }
     }
 
+
+    private boolean mUserInactive = false;
     /**
      * Called when a user activity timeout has occurred.
      * Simply indicates that something about user activity has changed so that the new
@@ -2082,7 +2085,7 @@ public final class PowerManagerService extends SystemService
 
             //powerHintInternal(POWER_HINT_INTERACTION, 0);
             powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
-
+	    mUserInactive = true;
 	    //powerHintInternal(POWER_HINT_LOW_POWER, (mLightDeviceIdleMode || mDeviceIdleMode) ? 1 : 0);
 
             mDirty |= DIRTY_USER_ACTIVITY;
@@ -2179,7 +2182,7 @@ public final class PowerManagerService extends SystemService
     private boolean isBeingKeptAwakeLocked() {
         return mStayOn
                 || mProximityPositive
-                || (mWakeLockSummary & WAKE_LOCK_STAY_AWAKE) != 0
+                || (mWakeLockSummary & ( WAKE_LOCK_STAY_AWAKE | WAKE_LOCK_PROXIMITY_SCREEN_OFF ) ) != 0
                 || (mUserActivitySummary & (USER_ACTIVITY_SCREEN_BRIGHT
                         | USER_ACTIVITY_SCREEN_DIM)) != 0
                 || mScreenBrightnessBoostInProgress;
@@ -2607,7 +2610,7 @@ public final class PowerManagerService extends SystemService
     private void updateSuspendBlockerLocked() {
         final boolean needWakeLockSuspendBlocker = ((mWakeLockSummary & WAKE_LOCK_CPU) != 0);
         final boolean needDisplaySuspendBlocker = needDisplaySuspendBlockerLocked();
-        final boolean autoSuspend = true; //!needDisplaySuspendBlocker;
+        final boolean autoSuspend = mDeviceIdleMode || mLightDeviceIdleMode || !needDisplaySuspendBlocker;
         final boolean interactive = mDisplayPowerRequest.isBrightOrDim();
 
         // Disable auto-suspend if needed.
@@ -2655,8 +2658,10 @@ public final class PowerManagerService extends SystemService
 
         // Enable auto-suspend if needed.
         if (autoSuspend && mDecoupleHalAutoSuspendModeFromDisplayConfig) {
+	    Slog.d(TAG, "enable autosuspend");
             setHalAutoSuspendModeLocked(true);
         }
+	//Slog.d(TAG, "updateSuspendBlockerLocked: wsb=" + needWakeLockSuspendBlocker + ", dsb=" + needDisplaySuspendBlocker );
     }
 
     /**
@@ -2667,6 +2672,26 @@ public final class PowerManagerService extends SystemService
         if (!mDisplayReady) {
             return true;
         }
+
+
+
+/*
+        final long now = SystemClock.uptimeMillis();
+
+
+
+	if( ((mLastUserActivityTimeNoChangeLights + 3000) < now) &&
+	    ((mLastButtonActivityTime + 3000) < now) &&
+	    ((mLastUserActivityTime + 3000) < now) )  {
+		mUserInactive = true;
+	}
+
+	if (mUserInactive && (mLightDeviceIdleMode || mDeviceIdleMode) ) {
+		Slog.d(TAG, "DisplaySuspendBlocker: idle");
+		return false;
+	}
+*/
+
         if (mDisplayPowerRequest.isBrightOrDim()) {
             // If we asked for the screen to be on but it is off due to the proximity
             // sensor then we may suspend but only if the configuration allows it.
@@ -2674,13 +2699,16 @@ public final class PowerManagerService extends SystemService
             // sensor may not be correctly configured as a wake-up source.
             if (!mDisplayPowerRequest.useProximitySensor || !mProximityPositive
                     || !mSuspendWhenScreenOffDueToProximityConfig) {
+//		Slog.d(TAG, "DisplaySuspendBlocker: proximity");
                 return true;
             }
         }
         if (mScreenBrightnessBoostInProgress) {
+//	    Slog.d(TAG, "DisplaySuspendBlocker: brightness");
             return true;
         }
         // Let the system suspend if the screen is off or dozing.
+//	Slog.d(TAG, "DisplaySuspendBlocker: suspend");
         return false;
     }
 
@@ -2864,6 +2892,7 @@ public final class PowerManagerService extends SystemService
                 mLightDeviceIdleMode = enabled;
             	//powerHintInternal(POWER_HINT_LOW_POWER, mLightDeviceIdleMode ? 1 : 0);
                 powerHintInternal(POWER_HINT_LOW_POWER, (mDeviceIdleMode || mLightDeviceIdleMode || mLowPowerModeEnabled) ? 1 : 0);
+		if( enabled ) setHalAutoSuspendModeLocked(true);
                 return true;
             }
             return false;
@@ -2934,7 +2963,7 @@ public final class PowerManagerService extends SystemService
         if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK)
                 == PowerManager.PARTIAL_WAKE_LOCK) {
             boolean disabled = false;
-            if (/*mDeviceIdleMode && */
+            if (
 		(wakeLock.mFlags & (
 			WAKE_LOCK_SCREEN_BRIGHT |
 			WAKE_LOCK_SCREEN_DIM |
@@ -2955,7 +2984,7 @@ public final class PowerManagerService extends SystemService
 		  )
 		{
 			disabled = true;
-		} else {
+		} else if (mDeviceIdleMode) {
 			
 
 		    int appid = 0;
@@ -2973,13 +3002,19 @@ public final class PowerManagerService extends SystemService
 			
                     if (appid < Process.FIRST_APPLICATION_UID ) {
 			enabled = true;
-	                Slog.i(TAG, "WakeLock: (enabled) system app wl=" + wakeLock);
+			if(DEBUG){
+	                    Slog.i(TAG, "WakeLock: (enabled) system app wl=" + wakeLock);
+			}
 		    } else if( Arrays.binarySearch(mDeviceIdleWhitelist, appid) >= 0 ) {
 			enabled = true;
-	                Slog.i(TAG, "WakeLock: (enabled) whitelist wl=" + wakeLock);
+	                if(DEBUG) {
+			    Slog.i(TAG, "WakeLock: (enabled) whitelist wl=" + wakeLock);
+			}
 		    } else if( Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) >= 0  )  {
 			enabled = true;
-	                Slog.i(TAG, "WakeLock: (enabled) temp whitelist wl=" + wakeLock);
+			if(DEBUG) {
+	                    Slog.i(TAG, "WakeLock: (enabled) temp whitelist wl=" + wakeLock);
+			}
 		    }
 		    if( !enabled ) {
                         disabled = true;
@@ -3006,7 +3041,9 @@ public final class PowerManagerService extends SystemService
 	    }
 
 	    if( disabled ) {
-                Slog.i(TAG, "WakeLock: (disabled) wl=" + wakeLock);
+                if(DEBUG) {
+		    Slog.i(TAG, "WakeLock: (disabled) wl=" + wakeLock);
+		}
 	    } else {
 	    }
 
