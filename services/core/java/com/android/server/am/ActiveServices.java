@@ -641,8 +641,11 @@ public final class ActiveServices {
             for (int i=services.mServicesByName.size()-1; i>=0; i--) {
                 ServiceRecord service = services.mServicesByName.valueAt(i);
                 if (service.appInfo.uid == uid && service.startRequested) {
-                    if (mAm.mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND,
-                            uid, service.packageName) != AppOpsManager.MODE_ALLOWED) {
+			if(mAm.checkAllowBackgroundLocked(service.appInfo.uid, service.packageName, -1, 
+                                   true, service.intent.getIntent()) != ActivityManager.APP_START_MODE_NORMAL  ) {
+
+                    //if (mAm.mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND,
+                            //uid, service.packageName) != AppOpsManager.MODE_ALLOWED) {
                         if (stopping == null) {
                             stopping = new ArrayList<>();
                             stopping.add(service);
