@@ -597,6 +597,9 @@ public final class BroadcastQueue {
             final int allowed = mService.checkAllowBackgroundLocked(filter.receiverList.uid,
                     filter.packageName, -1, true, r.intent);
             if (allowed == ActivityManager.APP_START_MODE_DISABLED) {
+		Slog.w(TAG, "Background execution not allowed: process "
+			+ r.callerApp + " component "
+			+ r.targetComp);
                 Slog.w(TAG, "Background execution not allowed: receiving "
                         + r.intent
                         + " to " + filter.receiverList.app
@@ -1163,6 +1166,9 @@ public final class BroadcastQueue {
                     // to it and the app is in a state that should not receive it
                     // (depending on how checkAllowBackgroundLocked has determined that).
                     if (allowed == ActivityManager.APP_START_MODE_DISABLED) {
+                        Slog.w(TAG, "Background execution disabled: target "
+				+ app + " info "
+				+ info);
                         Slog.w(TAG, "Background execution disabled: receiving "
                                 + r.intent + " to "
                                 + component.flattenToShortString());
