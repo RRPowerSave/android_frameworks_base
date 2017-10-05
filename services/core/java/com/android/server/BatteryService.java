@@ -194,6 +194,7 @@ public final class BatteryService extends SystemService {
     private final int mWeakChgMaxShutdownIntervalMsecs = 300000;
     private boolean mInitiateShutdown = false;
     private File mVoltageNowFile = null;
+    private File mCurrentNowFile = null;
     private Runnable runnable = new Runnable() {
         public void run() {
             synchronized (mLock) {
@@ -221,6 +222,7 @@ public final class BatteryService extends SystemService {
          /* 2700mV UVLO voltage */
         if (mWeakChgCutoffVoltageMv > 2700)
            mVoltageNowFile = new File("/sys/class/power_supply/battery/voltage_now");
+           mCurrentNowFile = new File("/sys/class/power_supply/battery/current_now");
         mHasDashCharger = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_hasDashCharger);
         mCriticalBatteryLevel = mContext.getResources().getInteger(
@@ -363,6 +365,27 @@ public final class BatteryService extends SystemService {
              mInitiateShutdown = false;
              mWeakChgSocCheckStarted = 0;
         }
+    }
+
+    private int getCurrentNow() {
+        int currNow = -1;
+        FileReader fileReader;
+        BufferedReader br;
+
+        try {
+            fileReader = new FileReader(mCurrentNowFile);
+            br = new BufferedReader(fileReader);
+            currNow =  Integer.parseInt(br.readLine());
+            /* convert battery voltage from uV to mV */
+            //vbattNow =  vbattNow / 1000;
+            br.close();
+            fileReader.close();
+        } catch (FileNotFoundException e) {
+            Slog.e(TAG, "Failure in reading battery current", e);
+        } catch (IOException e) {
+            Slog.e(TAG, "Failure in reading battery current", e);
+        }
+     	return currNow;
     }
 
     private void shutdownIfWeakChargerVoltageCheckLocked() {
@@ -526,6 +549,15 @@ public final class BatteryService extends SystemService {
                 mBatteryProps.batteryChargeCounter != mLastChargeCounter ||
                 mInvalidCharger != mLastInvalidCharger ||
                 mDashCharger != mLastDashCharger)) {
+
+		int currNow = getCurrentNow();
+
+		Slog.d(TAG,"Battery changed: level=" + mBatteryProps.batteryLevel 
+		    + ", current=" + currNow 
+		    + ", voltage=" + mBatteryProps.batteryVoltage
+		    + ", temp=" + mBatteryProps.batteryTemperature
+		    + ", chargingCurrent=" + mBatteryProps.maxChargingCurrent
+		    + ", chargingVoltage=" + mBatteryProps.maxChargingVoltage );
 
             if (mPlugType != mLastPlugType) {
                 if (mLastPlugType == BATTERY_PLUGGED_NONE) {
