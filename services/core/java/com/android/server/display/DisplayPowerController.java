@@ -691,6 +691,9 @@ final class DisplayPowerController implements AutomaticBrightnessController.Call
         if (brightness < 0) {
             if (autoBrightnessEnabled) {
                 brightness = mAutomaticBrightnessController.getAutomaticScreenBrightness();
+                if (DEBUG) {
+                    Slog.d(TAG, "updatePowerState: apply brightness: " + brightness);
+                }
             }
             if (brightness >= 0) {
                 // Use current auto-brightness value and slowly adjust to changes.
