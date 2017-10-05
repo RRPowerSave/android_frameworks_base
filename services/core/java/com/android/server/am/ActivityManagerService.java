@@ -2908,8 +2908,8 @@ public final class ActivityManagerService extends ActivityManagerNative
                                 final long now = SystemClock.uptimeMillis();
                                 long nextCpuDelay = (mLastCpuTime.get()+MONITOR_CPU_MAX_TIME)-now;
                                 long nextWriteDelay = (mLastWriteTime+BATTERY_STATS_TIME)-now;
-                                //Slog.i(TAG, "Cpu delay=" + nextCpuDelay
-                                //        + ", write delay=" + nextWriteDelay);
+                                Slog.i(TAG, "Cpu delay=" + nextCpuDelay
+                                        + ", write delay=" + nextWriteDelay);
                                 if (nextWriteDelay < nextCpuDelay) {
                                     nextCpuDelay = nextWriteDelay;
                                 }
@@ -3018,6 +3018,7 @@ public final class ActivityManagerService extends ActivityManagerNative
     }
 
     void updateCpuStatsNow() {
+	Slog.e(TAG, "Updating cpu stats");
         synchronized (mProcessCpuTracker) {
             mProcessCpuMutexFree.set(false);
             final long now = SystemClock.uptimeMillis();
@@ -8167,14 +8168,19 @@ public final class ActivityManagerService extends ActivityManagerNative
 
 	// if( mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
 	if( !mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
+
+	if( intent != null && PowerManagerService.isGcmWhitelistedService(intent) ) return ActivityManager.APP_START_MODE_NORMAL;
+
 	if( PowerManagerService.isGmsUid(uid) ) {
 	    if( intent == null ) return ActivityManager.APP_START_MODE_NORMAL;
 	    if( PowerManagerService.isGcmGmsService(intent) ) return ActivityManager.APP_START_MODE_NORMAL;
 	}
 	
 
+
 	if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid,
                 packageName) != AppOpsManager.MODE_ALLOWED) {
+	    Slog.d(TAG,"Blocked execution: uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
             return ActivityManager.APP_START_MODE_DISABLED;
         }
 
@@ -21506,7 +21512,7 @@ public final class ActivityManagerService extends ActivityManagerNative
                 		        uidRec.idle = true;
                     			doStopUidLocked(uidRec.uid, uidRec);
 			                //app.kill("app not allowed to run in idle mode", true);
-	            	                //Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+	            	                Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
 		                } else {
 	                            //Slog.d(TAG, "checkKeepRunnig: allowed: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
 	                        }
