@@ -357,7 +357,8 @@ public final class ActiveServices {
                     Slog.w(TAG, "Background start not allowed: service "
                             + service + " to " + r.name.flattenToShortString()
                             + " from pid=" + callingPid + " uid=" + callingUid
-                            + " pkg=" + callingPackage);
+                            + " pkg=" + callingPackage
+			    + " caller=" + caller);
                     return null;
                 }
             } finally {
@@ -658,7 +659,9 @@ public final class ActiveServices {
                     ServiceRecord service = stopping.get(i);
                     service.delayed = false;
                     services.ensureNotStartingBackground(service);
-                    stopServiceLocked(service);
+      	            Slog.v(TAG_SERVICE, "stopService: (forced by background) stop " + service + " intent=" + service.intent.getIntent());
+                    //stopServiceLocked(service);
+		    bringDownServiceLocked(service);	
                 }
             }
         }
