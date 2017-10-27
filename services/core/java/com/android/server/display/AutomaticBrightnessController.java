@@ -29,6 +29,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.text.format.DateUtils;
 import android.util.EventLog;
 import android.util.MathUtils;
@@ -81,7 +82,7 @@ class AutomaticBrightnessController {
 
     // The auto-brightness spline adjustment.
     // The brightness values have been scaled to a range of 0..1.
-    private final Spline mScreenAutoBrightnessSpline;
+    private Spline mScreenAutoBrightnessSpline;
 
     // The minimum and maximum screen brightnesses.
     private final int mScreenBrightnessRangeMinimum;
@@ -196,6 +197,7 @@ class AutomaticBrightnessController {
     private float mBrightnessAdjustmentSampleOldLux;
     private int mBrightnessAdjustmentSampleOldBrightness;
     private float mBrightnessAdjustmentSampleOldGamma;
+    private Spline mDefaultAutoBrightnessSpline = null;
 
     public AutomaticBrightnessController(Callbacks callbacks, Looper looper,
             SensorManager sensorManager, Spline autoBrightnessSpline, int lightSensorWarmUpTime,
@@ -209,6 +211,7 @@ class AutomaticBrightnessController {
         mCallbacks = callbacks;
         mSensorManager = sensorManager;
         mScreenAutoBrightnessSpline = autoBrightnessSpline;
+	mDefaultAutoBrightnessSpline = autoBrightnessSpline;
         mScreenBrightnessRangeMinimum = brightnessMin;
         mScreenBrightnessRangeMaximum = brightnessMax;
         mLightSensorWarmUpTimeConfig = lightSensorWarmUpTime;
@@ -245,6 +248,79 @@ class AutomaticBrightnessController {
         return mScreenAutoBrightness;
     }
 
+    private static Spline createAutoBrightnessSpline(int[] lux, int[] brightness) {
+        if (lux == null || lux.length == 0 || brightness == null || brightness.length == 0) {
+            Slog.e(TAG, "Could not create auto-brightness spline.");
+            return null;
+        }
+        try {
+            final int n = brightness.length;
+            float[] x = new float[n];
+            float[] y = new float[n];
+            y[0] = normalizeAbsoluteBrightness(brightness[0]);
+            for (int i = 1; i < n; i++) {
+                x[i] = lux[i - 1];
+                y[i] = normalizeAbsoluteBrightness(brightness[i]);
+            }
+
+            Spline spline = Spline.createSpline(x, y);
+            if (DEBUG) {
+                Slog.d(TAG, "Auto-brightness spline: " + spline);
+                for (float v = 1f; v < lux[lux.length - 1] * 1.25f; v *= 1.25f) {
+                    Slog.d(TAG, String.format("  %7.1f: %7.1f", v, spline.interpolate(v)));
+                }
+            }
+            return spline;
+        } catch (IllegalArgumentException ex) {
+            Slog.e(TAG, "Could not create auto-brightness spline.", ex);
+            return null;
+        }
+    }
+
+    private static float normalizeAbsoluteBrightness(int value) {
+        return (float)clampAbsoluteBrightness(value) / PowerManager.BRIGHTNESS_ON;
+    }
+
+    private static int clampAbsoluteBrightness(int value) {
+        return MathUtils.constrain(value, PowerManager.BRIGHTNESS_OFF, PowerManager.BRIGHTNESS_ON);
+    }
+
+    private int [] parseIntArray(String array) {
+
+        if (array.length()!=0){
+            String[] parts = array.split("\\,");
+	    if( DEBUG ) Slog.d(TAG,"Split size:" + parts.length);
+	    if( parts.length < 1 ) return new int[0];
+	    int [] value = new int[parts.length];
+            for(int i = 0; i < parts.length; i++){
+                value[i]=(Integer.parseInt(parts[i]));
+		if( DEBUG )Slog.d(TAG, "Value:" + value[i]);
+            }
+	    return value;
+        }
+    	return new int[0];
+    }
+
+    private void reloadAutoBrightnessConfig() {
+	String lux = SystemProperties.get("persist.ab.lux","");
+	String lcd = SystemProperties.get("persist.ab.lcd","");
+	if( lux.length() == 0 || lcd.length() == 0 ) {
+	    mScreenAutoBrightnessSpline = mDefaultAutoBrightnessSpline;
+	    return;
+	}
+
+	int [] luxValues = parseIntArray(lux);
+	int [] lcdValues = parseIntArray(lcd);
+	if( DEBUG ) Slog.d(TAG, "lux=" + luxValues.length + ", lcd=" + lcdValues.length);
+	if( (luxValues.length+1) != lcdValues.length ) {
+            Slog.d(TAG, "reloadAutoBrightnessConfig: invalid data");
+	    mScreenAutoBrightnessSpline = mDefaultAutoBrightnessSpline;
+	    return;
+	}
+        Spline newSpline = createAutoBrightnessSpline(luxValues, lcdValues);
+	mScreenAutoBrightnessSpline = newSpline;
+    }
+
     public void configure(boolean enable, float adjustment, boolean dozing,
             boolean userInitiatedChange) {
         // While dozing, the application processor may be suspended which will prevent us from
@@ -252,6 +328,11 @@ class AutomaticBrightnessController {
         // switch to a wake-up light sensor instead but for now we will simply disable the sensor
         // and hold onto the last computed screen auto brightness.  We save the dozing flag for
         // debugging purposes.
+
+	if( enable ) {
+	    reloadAutoBrightnessConfig();
+	}
+
         boolean enableSensor = enable && (dozing ? mUseActiveDozeLightSensorConfig : true);
         if (enableSensor && dozing && !mDozing && mLightSensorEnabled
                 && mUseNewSensorSamplesForDoze) {
