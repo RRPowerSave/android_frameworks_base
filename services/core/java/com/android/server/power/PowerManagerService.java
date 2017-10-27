@@ -99,6 +99,7 @@ import java.util.Arrays;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 
 import static android.os.PowerManagerInternal.POWER_HINT_INTERACTION;
 import static android.os.PowerManagerInternal.WAKEFULNESS_ASLEEP;
@@ -131,6 +132,8 @@ public final class PowerManagerService extends SystemService
     private static final int MSG_CHECK_FOR_LONG_WAKELOCKS = 4;
 
     private static final int MSG_WAKE_UP = 5;
+
+    private static final int MSG_TOP_APP_CHANGED = 6;
 
     // Dirty bit: mWakeLocks changed
     protected static final int DIRTY_WAKE_LOCKS = 1 << 0;
@@ -593,6 +596,12 @@ public final class PowerManagerService extends SystemService
     private Sensor mProximitySensor;
     private SensorEventListener mProximityListener;
     private android.os.PowerManager.WakeLock mProximityWakeLock;
+
+    private boolean mTopAppIsReaderApp = false;
+    private int mTopAppUid = 0;
+    private String mTopAppPackageName = "android";
+
+    private boolean mCpuSleepActivated = false;
 
     public PowerManagerService(Context context) {
         super(context);
@@ -1355,7 +1364,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private boolean userActivityNoUpdateLocked(long eventTime, int event, int flags, int uid) {
-        if (DEBUG) {
+        if (DEBUG_SPEW) {
             Slog.d(TAG, "userActivityNoUpdateLocked: eventTime=" + eventTime
                     + ", event=" + event + ", flags=0x" + Integer.toHexString(flags)
                     + ", uid=" + uid);
@@ -1369,10 +1378,10 @@ public final class PowerManagerService extends SystemService
         Trace.traceBegin(Trace.TRACE_TAG_POWER, "userActivity");
         try {
             if (eventTime > mLastInteractivePowerHintTime) {
-                powerHintInternal(POWER_HINT_INTERACTION, 0); //SDV!!! 0->1
-            	// powerHintInternal(POWER_HINT_LOW_POWER, 0);
+                powerHintInternal(POWER_HINT_INTERACTION, 0);
                 powerHintInternal(POWER_HINT_LOW_POWER, 0);
 	    	mUserInactive = false;
+		mCpuSleepActivated = false;
                 mLastInteractivePowerHintTime = eventTime;
             }
 
@@ -1837,9 +1846,15 @@ public final class PowerManagerService extends SystemService
                         if (wakeLock.isBlocked()){
                             continue;
                         }
-                        if (!wakeLock.mDisabled) {
-                            // We only respect this if the wake lock is not disabled.
-                            mWakeLockSummary |= WAKE_LOCK_CPU;
+                        if (!wakeLock.mDisabled ) {
+			    if( !(mTopAppIsReaderApp && mTopAppUid == wakeLock.mOwnerUid) ) {
+                                // We only respect this if the wake lock is not disabled.
+                                mWakeLockSummary |= WAKE_LOCK_CPU;
+			    } else {
+			        if (DEBUG) {
+                		    Slog.d(TAG, "updateCpuSleepMode: readerApp, WAKE_LOCK_CPU stripped " + wakeLock);
+				}
+			    }
                         }
                         break;
                     case PowerManager.FULL_WAKE_LOCK:
@@ -2058,7 +2073,10 @@ public final class PowerManagerService extends SystemService
                 if (mUserActivitySummary != 0 && nextTimeout >= 0) {
                     Message msg = mHandler.obtainMessage(MSG_USER_ACTIVITY_TIMEOUT);
                     msg.setAsynchronous(true);
-		    if( nextTimeout > (now + 5000) ) nextTimeout = now + 5000;
+		    if( mLightDeviceIdleMode ) {
+		        if( !mCpuSleepActivated && mTopAppIsReaderApp && nextTimeout > (now + 1000) ) nextTimeout = now + 1000;
+		        if( !mCpuSleepActivated && mCpuSleepScreenOn && nextTimeout > (now + 5000) ) nextTimeout = now + 5000;
+		    }
                     mHandler.sendMessageAtTime(msg, nextTimeout);
                 }
             } else {
@@ -2086,7 +2104,7 @@ public final class PowerManagerService extends SystemService
      */
     private void handleUserActivityTimeout() { // runs on handler thread
         synchronized (mLock) {
-            if (DEBUG) {
+            if (DEBUG_SPEW) {
                 Slog.d(TAG, "handleUserActivityTimeout");
             }
 
@@ -2668,10 +2686,10 @@ public final class PowerManagerService extends SystemService
 
         // Enable auto-suspend if needed.
         if (autoSuspend /*&& mDecoupleHalAutoSuspendModeFromDisplayConfig*/) {
-	    Slog.d(TAG, "enable autosuspend");
+	    if( DEBUG_SPEW ) Slog.d(TAG, "enable autosuspend");
             setHalAutoSuspendModeLocked(true);
         }
-	Slog.d(TAG, "updateSuspendBlockerLocked: wsb=" + needWakeLockSuspendBlocker + ", dsb=" + needDisplaySuspendBlocker );
+	if( DEBUG) Slog.d(TAG, "updateSuspendBlockerLocked: wsb=" + needWakeLockSuspendBlocker + ", dsb=" + needDisplaySuspendBlocker );
     }
 
     /**
@@ -2680,41 +2698,58 @@ public final class PowerManagerService extends SystemService
      */
     private boolean needDisplaySuspendBlockerLocked() {
         if (!mDisplayReady) {
+	    mCpuSleepActivated = false;
             return true;
         }
 
-
-	mUserInactive = false;
+        mUserInactive = false;
 
         final long now = SystemClock.uptimeMillis();
 
-	if( mDeviceIdleMode ) return false;
+	if( mDeviceIdleMode ) {
+	    mCpuSleepActivated = false;
+	    return false;
+	}
 
 	if( mLightDeviceIdleMode &&  
 	    mDisplayPowerRequest.policy != DisplayPowerRequest.POLICY_BRIGHT &&
 	    mDisplayPowerRequest.policy != DisplayPowerRequest.POLICY_VR ) {
-		Slog.d(TAG, "DisplaySuspendBlocker: DIM_OR_OFF");
+		if( DEBUG) Slog.d(TAG, "DisplaySuspendBlocker: DIM_OR_OFF");
+	    	mCpuSleepActivated = false;
 		return false;	
 	}
-	
-	if( mCpuSleepScreenOn ) {
-	    if( ((mLastUserActivityTimeNoChangeLights + 5000) < now) &&
-	        ((mLastButtonActivityTime + 5000) < now) &&
-	        ((mLastUserActivityTime + 5000) < now) )  {
-		    mUserInactive = true;
+
+	if (mLightDeviceIdleMode) {
+
+	    //updateTopAppLocked(0);
+
+	    if( mTopAppIsReaderApp ) {
+	        if( ((mLastUserActivityTimeNoChangeLights + 1000) < now) &&
+	            ((mLastButtonActivityTime + 1000) < now) &&
+	            ((mLastUserActivityTime + 1000) < now) )  {
+			if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: reader mode timeout");
+		        mUserInactive = true;
+	        }
+	    } else if( mCpuSleepScreenOn ) {
+	        if( ((mLastUserActivityTimeNoChangeLights + 5000) < now) &&
+	            ((mLastButtonActivityTime + 5000) < now) &&
+	            ((mLastUserActivityTime + 5000) < now) )  {
+			if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: cpusleep mode timeout");
+		        mUserInactive = true;
+	        }
 	    }
-	}
 
-	if (mLightDeviceIdleMode || mDeviceIdleMode) {
 
-		Slog.d(TAG, "DisplaySuspendBlocker: now=" + now + 
+	    if( DEBUG ) Slog.d(TAG, "DisplaySuspendBlocker: now=" + now + 
 		    ", UserActivityTimeNoChangeLights=" + mLastUserActivityTimeNoChangeLights + 
 		    ", mLastButtonActivityTime=" + mLastButtonActivityTime + 
-		    ", mLastUserActivityTime=" + mLastUserActivityTime);
-		if( mUserInactive ) {
-			Slog.d(TAG, "DisplaySuspendBlocker: userIdle");
-			return false;
-		}
+		    ", mLastUserActivityTime=" + mLastUserActivityTime +
+		    ", mTopAppIsReaderApp=" + mTopAppIsReaderApp +
+		    ", mTopAppUid=" + mTopAppUid);
+	    if( mUserInactive ) {
+		mCpuSleepActivated = true;
+		return false;
+	    }
 	}
 
         if (mDisplayPowerRequest.isBrightOrDim()) {
@@ -2725,15 +2760,18 @@ public final class PowerManagerService extends SystemService
             if (!mDisplayPowerRequest.useProximitySensor || !mProximityPositive
                     || !mSuspendWhenScreenOffDueToProximityConfig) {
 //		Slog.d(TAG, "DisplaySuspendBlocker: proximity");
+	    	mCpuSleepActivated = false;
                 return true;
             }
         }
         if (mScreenBrightnessBoostInProgress) {
 //	    Slog.d(TAG, "DisplaySuspendBlocker: brightness");
+	    mCpuSleepActivated = false;
             return true;
         }
         // Let the system suspend if the screen is off or dozing.
 //	Slog.d(TAG, "DisplaySuspendBlocker: suspend");
+	mCpuSleepActivated = false;
         return false;
     }
 
@@ -2942,15 +2980,116 @@ public final class PowerManagerService extends SystemService
         }
     }
 
+
+    
+//  ActivityManager
+
+    ActivityManager mAm = null;
+
+    ActivityManager.RunningTaskInfo getRunningTask() {
+
+	if( mAm == null ) {
+	    mAm = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+	}
+
+        List<ActivityManager.RunningTaskInfo> tasks = mAm.getRunningTasks(1);
+        if (tasks != null && !tasks.isEmpty()) {
+            return tasks.get(0);
+        }
+        return null;
+    }
+
+    String mLastForegroungPackage;
     void updateUidProcStateInternal(int uid, int procState) {
         synchronized (mLock) {
             mUidState.put(uid, procState);
-            //if (mDeviceIdleMode) {
-                updateWakeLockDisabledStatesLocked();
-            //}
+	    if( DEBUG_SPEW ) Slog.i(TAG, "updateUidProcStateInternal: uid=" + uid + ", procState=" + procState);
+	    //if (mDeviceIdleMode) {
+	    if( procState == 2 ) {
+		//updateTopAppLocked(uid);
+                Message msg = mHandler.obtainMessage(MSG_TOP_APP_CHANGED);
+                msg.setAsynchronous(true);
+                mHandler.sendMessage(msg);
+	        return;
+	    }
+            updateWakeLockDisabledStatesLocked();
         }
     }
 
+
+    void handleTopAppChanged() {
+	updateTopAppLocked();
+
+        synchronized (mLock) {
+            updateWakeLockDisabledStatesLocked();
+	    updatePowerStateLocked();
+	}
+    }
+
+    void updateTopAppLocked() {
+	int app_uid = -1;
+
+	ActivityManager.RunningTaskInfo task = getRunningTask();
+	if( task == null ) {
+	    mTopAppIsReaderApp = false;
+	    return;
+	}
+	Slog.i(TAG, "updateUidProcStateInternal: running task top=" + task.topActivity + ", base=" + task.baseActivity );
+
+	String packageName = task.baseActivity.getPackageName();
+
+        synchronized (mLock) {
+	    if( mLastForegroungPackage == packageName )  {
+	        return;
+	    }
+    	    mLastForegroungPackage = packageName;
+	}
+
+
+
+	try {
+       	   app_uid = mContext.getPackageManager().getApplicationInfo(packageName, 0).uid;
+	} catch(PackageManager.NameNotFoundException e) {
+	    //mTopAppIsReaderApp = false;
+	    return;
+	}
+	
+		
+
+	if( app_uid == -1 ) {
+	    //mTopAppIsReaderApp = false;
+	    return;
+	}
+
+	boolean isReaderModeApp = false;
+	if( !UserHandle.isIsolated(app_uid) ) {
+
+            synchronized (mLock) {
+                try {
+                    if (mAppOps != null &&
+                        mAppOps.noteOperation(AppOpsManager.OP_WAKE_LOCK, app_uid, mLastForegroungPackage)
+                        == AppOpsManager.MODE_IGNORED) {
+                        //if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: reader mode app " + packageName);
+		        isReaderModeApp = true;
+                    } else {
+                        //if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: not reader mode app " + packageName);
+	                isReaderModeApp = false;
+                    }
+                } catch (RemoteException e) {
+	            isReaderModeApp = false;
+                }
+	    }
+	} else {
+	    isReaderModeApp = false;
+	}
+
+	if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: uid=" + app_uid + ", packageName=" + mLastForegroungPackage + ", isReaderModeApp=" + isReaderModeApp);
+	mTopAppIsReaderApp = isReaderModeApp;
+	mTopAppUid = app_uid;
+	mTopAppPackageName = mLastForegroungPackage;
+	staticReaderApp = isReaderModeApp;
+    }
+	
     void uidGoneInternal(int uid) {
         synchronized (mLock) {
             mUidState.delete(uid);
@@ -3027,17 +3166,17 @@ public final class PowerManagerService extends SystemService
 			
                     if (appid < Process.FIRST_APPLICATION_UID ) {
 			enabled = true;
-			if(DEBUG){
+			if(DEBUG_SPEW){
 	                    Slog.i(TAG, "WakeLock: (enabled) system app wl=" + wakeLock);
 			}
 		    } else if( Arrays.binarySearch(mDeviceIdleWhitelist, appid) >= 0 ) {
 			enabled = true;
-	                if(DEBUG) {
+	                if(DEBUG_SPEW) {
 			    Slog.i(TAG, "WakeLock: (enabled) whitelist wl=" + wakeLock);
 			}
 		    } else if( Arrays.binarySearch(mDeviceIdleTempWhitelist, appid) >= 0  )  {
 			enabled = true;
-			if(DEBUG) {
+			if(DEBUG_SPEW) {
 	                    Slog.i(TAG, "WakeLock: (enabled) temp whitelist wl=" + wakeLock);
 			}
 		    }
@@ -3047,11 +3186,11 @@ public final class PowerManagerService extends SystemService
 		}
             } else {
 		if( (mDeviceIdleMode || mLightDeviceIdleMode) ) {
-                    if(DEBUG) {
+                    if(DEBUG_SPEW) {
         	        Slog.i(TAG, "WakeLock: (enabled) hardcoded wl=" + wakeLock);
 	            }
 		} else  {
-                    if(DEBUG) {
+                    if(DEBUG_SPEW) {
         	        Slog.i(TAG, "WakeLock: (enabled) not in idle wl=" + wakeLock);
 	            }
 		}
@@ -3062,7 +3201,7 @@ public final class PowerManagerService extends SystemService
 	    String tag = wakeLock.mTag;
 
 	    if( !disabled ) {
-	        if (!mSeenWakeLocks.contains(tag)){
+	        if (!mSeenWakeLocks.contains(tag) && mDeviceIdleMode){
                     if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK) == PowerManager.PARTIAL_WAKE_LOCK){
                         mSeenWakeLocks.add(tag);
                     }
@@ -3077,7 +3216,7 @@ public final class PowerManagerService extends SystemService
 	    }
 
 	    if( disabled ) {
-                if(DEBUG) {
+                if(DEBUG_SPEW) {
 		    Slog.i(TAG, "WakeLock: (disabled) wl=" + wakeLock);
 		}
 	    } 
@@ -3116,7 +3255,7 @@ public final class PowerManagerService extends SystemService
                 return;
             }
 
-            Slog.i(TAG, "Brightness boost activated (uid " + uid +")...");
+            if( DEBUG ) Slog.i(TAG, "Brightness boost activated (uid " + uid +")...");
             mLastScreenBrightnessBoostTime = eventTime;
             if (!mScreenBrightnessBoostInProgress) {
                 mScreenBrightnessBoostInProgress = true;
@@ -3217,7 +3356,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private void powerHintInternal(int hintId, int data) {
-        Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
+        //Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
         nativeSendPowerHint(hintId, data);
     }
 
@@ -3567,6 +3706,9 @@ public final class PowerManagerService extends SystemService
                     cleanupProximity();
                     ((Runnable) msg.obj).run();
                     break;
+                case MSG_TOP_APP_CHANGED:
+                    handleTopAppChanged();
+                    break;
             }
         }
     }
@@ -3828,6 +3970,7 @@ public final class PowerManagerService extends SystemService
             final int uid = Binder.getCallingUid();
             final int pid = Binder.getCallingPid();
 
+	    /*
             try {
                 if (mAppOps != null &&
                         mAppOps.checkOperation(AppOpsManager.OP_WAKE_LOCK, uid, packageName)
@@ -3840,6 +3983,7 @@ public final class PowerManagerService extends SystemService
                 }
             } catch (RemoteException e) {
             }
+            */
 
             final long ident = Binder.clearCallingIdentity();
             try {
@@ -4631,6 +4775,7 @@ public final class PowerManagerService extends SystemService
 	return false;
     }
 
+/*
     public static boolean isGcmGmsService(Intent intent) {
 
 	ComponentName cmp = intent.getComponent();
@@ -4666,50 +4811,204 @@ public final class PowerManagerService extends SystemService
         //Slog.d(TAG, "checkAllowIntent: blocked intent=" + intent );
 	return false;
     }
+*/
 
-    public static boolean isGcmWhitelistedService(Intent intent) {
 
-	ComponentName cmp = intent.getComponent();
-	if( cmp != null ) {
-	    String cls = cmp.toString();
- 	    if( cls != null ) {
-		if( cls.contains("com.google.android.gms/.gcm.") ) return true;
-	        if( cls.contains(".gcm.GcmService") ) return true;
-	        if( cls.contains(".auth.easyunlock.authorization.InitializerIntentService") ) return true;
+    static boolean staticReaderApp = false;
+    public static boolean isReaderMode() {
+	return staticReaderApp;
+    }
+
+    private static Set<String> mSeenServices = new HashSet<String>();
+
+
+    public static boolean isWhitelistedInSemiIdleService(String packageName,String cls, String act) {
+	if( packageName == null ) return true;
+	else if( packageName.equals("com.google.android.gms") ) {
+	    if( cls != null ) {
+		if( cls.contains("com.google.android.gms.usagereporting") ) return false;
+		if( cls.contains("com.google.android.gms.location.reporting.service") ) return false;
+		if( cls.contains("com.google.android.gms.clearcut") ) return false;
+		if( cls.contains("com.google.android.gms.measurement") ) return false;
+		if( cls.contains("com.google.android.gms.stats") ) return false;
+		if( cls.contains("com.google.android.gms.nearby") ) return false;
+//		if( cls.contains("com.google.location.nearby") ) return false;
+	    }
+	    if( act != null ) {
+		if( act.contains("com.google.android.gms.stats") ) return false;
+		if( act.contains("com.google.android.gms.nearby") ) return false;
+//		if( act.contains("com.google.location.nearby") ) return false;
+		if( act.contains("com.google.android.location.internal.GMS_NLP") ) return false;
+		if( act.contains("com.google.android.gms.measurement") ) return false;
+	    }
+	} else if( packageName.equals("com.viber.voip") ) {
+		return true;
+	} else if( packageName.equals("com.whatsapp") ) {
+		return true;
+	} else if( packageName.equals("ru.yandex.weatherplugin") ) {
+		if( cls != null && cls.contains("ru.yandex.weatherplugin.widgets.updater.WidgetService") ) return true;
+	} else if( packageName.equals("org.telegram.messenger") ) {
+		return true;
+	}
+
+	return true;
+    }
+    
+
+    public static boolean isWhitelistedService(String packageName,String cls, String act) {
+
+
+	if( packageName == null ) return true;
+	else if( packageName.equals("com.google.android.gms") ) {
+	    if( cls != null ) {
+		if( cls.contains("com.google.android.gms.auth") ) return true;
+		if( cls.contains("com.google.android.gms.gcm") ) return true;
+
+		if( cls.contains("com.google.android.gms.backup.BackupTransportService") ) return true;
+
+		if( cls.contains("com.google.android.gms.chimera.GmsIntentOperationService") ) return true;
+		if( cls.contains("com.google.android.gms.chimera.PersistentBoundBrokerService") ) return true;
+		if( cls.contains("com.google.android.gms.config.ConfigService") ) return true;
+		if( cls.contains("com.google.android.gms.deviceconnection.service.DeviceConnectionWatcherService") ) return true;
+		if( cls.contains("com.google.android.gms.lockbox") ) return true;
+		if( cls.contains("com.google.android.gms.security.snet") ) return true;
+		if( cls.contains("com.google.android.gms.droidguard") ) return true;
+		if( cls.contains("com.google.android.gms.common") ) return true;
+		if( cls.contains("com.google.android.gms.tapandpay") ) return true;
+		if( cls.contains("com.google.android.gms.gass") ) return true;
+		if( cls.contains("com.google.android.gms.trustagent") ) return true;
+		if( cls.contains("com.google.android.location.internal.server.GoogleLocationService") ) return true;
+		if( cls.contains("com.google.android.location.internal.PendingIntentCallbackService") ) return true;
+	    }
+	    if( act != null ) {
+		if( act.contains("com.google.android.c2dm") ) return true;
+		if( act.contains("com.google.android.gms.auth.DATA_PROXY") ) return true;
+		if( act.contains("com.google.android.gms.config") ) return true;
+		if( act.contains("com.google.android.gms.droidguard") ) return true;
+		if( act.contains("com.google.android.gms.common") ) return true;
+		if( act.contains("com.google.android.location.internal.action.FLP_LOW_POWER_LOCATION_RESULT") ) return true;
+		if( act.contains("com.google.android.location.internal.GoogleLocationManagerService") ) return true;
+	    }
+	//} else if( packageName.startsWith("com.android") && !packageName.startsWith("com.android.chrome") ) {
+	//	return true;
+	} else if( packageName.equals("com.viber.voip") ) {
+		return true;
+	} else if( packageName.equals("com.whatsapp") ) {
+		return true;
+	} else if( packageName.equals("ru.yandex.weatherplugin") ) {
+		if( cls != null && cls.contains("ru.yandex.weatherplugin.widgets.updater.WidgetService") ) return true;
+	} else if( packageName.equals("org.telegram.messenger") ) {
+		return true;
+	} else if( packageName.equals("com.microsoft.cortana") ) {
+		return true;
+	} 
+
+
+	String sPkg = packageName;
+	String sCls = cls;
+	String sAct = act;
+
+	if( sPkg == null ) sPkg = "null";
+	if( sCls == null ) sCls = "null";
+	if( sAct == null ) sAct = "null";
+	String tag = sPkg + ";" + sCls + ";" + sAct;
+	if (!mSeenServices.contains(tag)) {
+            mSeenServices.add(tag);
+            Slog.d(TAG, "checkKeep:(7) service;" + tag);
+	}
+
+
+	if( cls != null ) {
+		if( cls.contains("org.telegram.messenger.GcmPushListenerService") ) return true;
 	        if( cls.contains(".gcm.nts.SchedulerInternalReceiver") ) return true;
         	if( cls.contains(".tapandpay.gcmtask.TapAndPayGcmTaskService") ) return true;
-        	if( cls.contains("com.whatsapp/.service.GcmFGService") ) return true;
-        	if( cls.contains("com.whatsapp/.gcm.RegistrationIntentService") ) return true;
-        	if( cls.contains("com.skype.insiders/com.microsoft.csi.core.services.ModelSyncService") ) return true;
-        	if( cls.contains("org.telegram.messenger/.NotificationsService") ) return true;
-        	if( cls.contains("com.viber.voip/com.viber.service.VoipConnectorService") ) return true;
-        	if( cls.contains("org.telegram.messenger/.GcmRegistrationIntentService") ) return true;
-        	if( cls.contains("com.google.android.gms/.phenotype.service.PhenotypeService") ) return true;
-	        //if( cls.contains(".phenotype.service.PhenotypeService") ) return true;
- 	        //if( cls.contains(".chimera.GmsIntentOperationService") ) return true;
-	        //if( cls.contains(".udc.service.UdcContextInitService") ) return true;
-	        //if( cls.contains(".chimera.PersistentBoundBrokerService") ) return true;
-	        //if( cls.contains(".instantapps.routing.DomainFilterUpdateService") ) return true;
-	        //if( cls.contains(".auth.authzen.api.service.internaldata.CryptauthInternalDataService") ) return true;
-	        //if( cls.contains(".auth.api.credentials.sync.CredentialSyncReceiverService") ) return true;
-	        //if( cls.contains(".auth.setup.devicesignals.LockScreenService") ) return true;
-	        //if( cls.contains(".service.ContextManagerService") ) return true;
+        	if( cls.contains(".service.GcmFGService") ) return true;
+        	if( cls.contains(".gcm.RegistrationIntentService") ) return true;
+        	if( cls.contains("com.microsoft.csi.core.services.ModelSyncService") ) return true;
+        	if( cls.contains("org.telegram.messenger.NotificationsService") ) return true;
+        	if( cls.contains("com.viber.service.VoipConnectorService") ) return true;
+        	if( cls.contains(".GcmRegistrationIntentService") ) return true;
+        	if( cls.contains(".auth.trustagent.GoogleTrustAgent") ) return true;
+        	if( cls.contains(".trustagent.api.bridge.TrustAgentBridgeService") ) return true;
+	}
+
+	if( act != null ) {
+	    	
+		// Activities
+		if( act.contains("com.google.android.c2dm") ) return true;
+	    	if( act.contains("com.google.android.gms.gcm") ) return true;
+	    	if( act.contains("android.net.conn.DATA_ACTIVITY_CHANGE") ) return true;
+	    	if( act.contains("com.google.android.intent.action.GCM_RECONNECT") ) return true;
+	    	if( act.contains("com.microsoft.react.push") ) return true;
+	}
+        //Slog.d(TAG, "checkKeep:(6) blocked pkg=" + packageName + ", cls=" + cls + ", act=" + act);
+	return false;
+    }
+
+
+    
+
+    public static boolean isWhitelistedService(Intent intent) {
+
+	ComponentName cmp = intent.getComponent();
+	String cls=null;
+	String pkg=null;
+	if( cmp != null ) {
+	    pkg = cmp.getPackageName();
+	    cls = cmp.getClassName();
+ 	    if( cls != null ) {
+		if( isWhitelistedService(pkg,cls,null) ) return true;
 	    }
 	}
 
-
 	String act = intent.getAction();
+	pkg = intent.getPackage();
 	if( act != null ) {
-            //Slog.d(TAG, "checkAllowIntent: act=" + act );
-	    if( act.contains("com.google.android.c2dm") ) return true;
-	    if( act.contains("com.google.android.gms.gcm") ) return true;
-	    if( act.contains("android.net.conn.DATA_ACTIVITY_CHANGE") ) return true;
-	    if( act.contains("com.google.android.intent.action.GCM_RECONNECT") ) return true;
-	    if( act.contains("com.microsoft.react.push") ) return true;
-            //Slog.d(TAG, "checkAllowIntent: act=" + act + " blocked");
+	    if( isWhitelistedService(pkg,null,act) ) return true;
 	}
-        //Slog.d(TAG, "checkAllowIntent: blocked intent=" + intent );
+        //Slog.d(TAG, "checkKeep:(5) blocked intent=" + intent + ", pkg=" + pkg + ", cls=" + cls + ", act=" + act);
 	return false;
     }
+
+    public static boolean isWhitelistedInSemiIdleService(Intent intent) {
+
+	ComponentName cmp = intent.getComponent();
+	String cls=null;
+	String pkg=null;
+	if( cmp != null ) {
+	    pkg = cmp.getPackageName();
+	    cls = cmp.getClassName();
+ 	    if( cls != null ) {
+		if( isWhitelistedInSemiIdleService(pkg,cls,null) ) return true;
+	    }
+	}
+
+	String act = intent.getAction();
+	pkg = intent.getPackage();
+	if( act != null ) {
+	    if( isWhitelistedInSemiIdleService(pkg,null,act) ) return true;
+	}
+        //Slog.d(TAG, "checkKeep:(5) blocked intent=" + intent + ", pkg=" + pkg + ", cls=" + cls + ", act=" + act);
+	return false;
+    }
+
+     public String getAppNameByUID(int uid) {
+	    if( mContext == null ) return "android";
+
+	    final PackageManager pm = mContext.getPackageManager();
+
+	    String pkgname = "android";
+
+	    for (ApplicationInfo info : pm.getInstalledApplications(0)) {
+	    	if( uid == info.uid ) {
+		    pkgname = info.packageName;
+		    break;
+		}
+	    }
+
+	    if( DEBUG_SPEW ) Slog.w(TAG, "pkg=" + pkgname + " uid=" + uid);
+	    return pkgname;
+    }
+
 
 }
