@@ -109,11 +109,9 @@ public class DeviceIdleController extends SystemService
         implements AnyMotionDetector.DeviceIdleCallback {
     private static final String TAG = "DeviceIdleController";
     private static final String SEMIIDLE_SYSTEM_PROPERTY = "persist.semiidle.enabled";
+    private static final String DEVIDLE_SYSTEM_PROPERTY = "persist.devidle.enabled";
 
     private static final boolean DEBUG = true;
-
-    private boolean mSemiIdleEnabled = true;
-
 
     private static final boolean COMPRESS_TIME = false;
 
@@ -804,8 +802,8 @@ public class DeviceIdleController extends SystemService
                     Slog.e(TAG, "Bad device idle settings", e);
                 }
 
-                LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = 3000L;
-                LIGHT_PRE_IDLE_TIMEOUT = 3000L;
+                LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT = 10L;
+                LIGHT_PRE_IDLE_TIMEOUT = 10L;
                 LIGHT_IDLE_TIMEOUT = 60*60*1000L;
                 LIGHT_IDLE_FACTOR = 1.0F;
                 LIGHT_MAX_IDLE_TIMEOUT = 60*60*1000L;
@@ -813,7 +811,7 @@ public class DeviceIdleController extends SystemService
                 LIGHT_IDLE_MAINTENANCE_MAX_BUDGET = 10000L;
                 MIN_LIGHT_MAINTENANCE_TIME = 5000L;
                 MIN_DEEP_MAINTENANCE_TIME = 5000L;
-                INACTIVE_TIMEOUT = 5000L;
+                INACTIVE_TIMEOUT = 2000L;
                 SENSING_TIMEOUT = 0L;
                 LOCATING_TIMEOUT = 0L;
                 LOCATION_ACCURACY = 100;
@@ -1070,9 +1068,7 @@ public class DeviceIdleController extends SystemService
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
                     } else {
                         deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
-			boolean semiIdleEnabled = SystemProperties.getBoolean(SEMIIDLE_SYSTEM_PROPERTY, true);
-            		if (DEBUG) Slog.d(TAG, "SemiIdle mode enabled=" + semiIdleEnabled);
-                        lightChanged = mLocalPowerManager.setLightDeviceIdleMode(semiIdleEnabled);
+                        lightChanged = mLocalPowerManager.setLightDeviceIdleMode(true);
                     }
                     try {
                         // mNetworkPolicyManager.setDeviceIdleMode(true);
@@ -1879,10 +1875,11 @@ public class DeviceIdleController extends SystemService
             mScreenOn = true;
             if (!mForceIdle) {
                 becomeActiveLocked("screen", Process.myUid());
-		if( mSemiIdleEnabled ) {
+		boolean semiIdleEnabled = SystemProperties.getBoolean(SEMIIDLE_SYSTEM_PROPERTY, false);
+       		if (DEBUG) Slog.d(TAG, "SemiIdle mode enabled=" + semiIdleEnabled);
+		if( semiIdleEnabled ) {
 		    becomeInactiveIfAppropriateLocked();
 		} 
-	
             }
         }
     }
@@ -1926,6 +1923,14 @@ public class DeviceIdleController extends SystemService
 
     void becomeInactiveIfAppropriateLocked() {
         if (DEBUG) Slog.d(TAG, "becomeInactiveIfAppropriateLocked()");
+
+	boolean idleEnabled = SystemProperties.getBoolean(DEVIDLE_SYSTEM_PROPERTY, false);
+	if (DEBUG) Slog.d(TAG, "Idle mode enabled=" + idleEnabled);
+	if( !idleEnabled ) {
+            becomeActiveLocked("disabled", Process.myUid());
+	    return;
+	}
+
         if (!mCharging || mForceIdle) {
             // Screen has turned off; we are now going to become inactive and start
             // waiting to see if we will ultimately go idle.
