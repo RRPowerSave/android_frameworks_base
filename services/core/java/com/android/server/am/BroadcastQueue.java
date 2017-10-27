@@ -594,19 +594,21 @@ public final class BroadcastQueue {
             skip = true;
         }
         if (!skip) {
-            final int allowed = mService.checkAllowBackgroundLocked(filter.receiverList.uid,
-                    filter.packageName, -1, true, r.intent);
-            if (allowed == ActivityManager.APP_START_MODE_DISABLED) {
-		Slog.w(TAG, "Background execution not allowed: process "
+	    if( mService.isDeviceIdleMode() ) {
+                final int allowed = mService.checkAllowBackgroundLocked(filter.receiverList.uid,
+                    filter.packageName, -1, true, r.intent, null);
+                if (allowed == ActivityManager.APP_START_MODE_DISABLED) {
+		    Slog.w(TAG, "Background execution not allowed: process "
 			+ r.callerApp + " component "
 			+ r.targetComp);
-                Slog.w(TAG, "Background execution not allowed: receiving "
+                    Slog.w(TAG, "Background execution not allowed: receiving "
                         + r.intent
                         + " to " + filter.receiverList.app
                         + " (pid=" + filter.receiverList.pid
                         + ", uid=" + filter.receiverList.uid + ")");
-                skip = true;
-            }
+                    skip = true;
+                }
+	    }
         }
 
         if (!mService.mIntentFirewall.checkBroadcast(r.intent, r.callingUid,
@@ -1157,9 +1159,12 @@ public final class BroadcastQueue {
                     info.activityInfo.applicationInfo.uid, false);
 
             if (!skip) {
+
+	    if( mService.isDeviceIdleMode() ) {
+
                 final int allowed = mService.checkAllowBackgroundLocked(
                         info.activityInfo.applicationInfo.uid, info.activityInfo.packageName, -1,
-                        false, r.intent);
+                        false, r.intent, null);
                 if (allowed != ActivityManager.APP_START_MODE_NORMAL) {
                     // We won't allow this receiver to be launched if the app has been
                     // completely disabled from launches, or it was not explicitly sent
@@ -1184,6 +1189,7 @@ public final class BroadcastQueue {
                         skip = true;
                     }
                 }
+		}
             }
 
             if (skip) {
