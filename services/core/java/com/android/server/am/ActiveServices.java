@@ -88,7 +88,7 @@ public final class ActiveServices {
     private static final boolean LOG_SERVICE_START_STOP = false;
 
     // How long we wait for a service to finish executing.
-    static final int SERVICE_TIMEOUT = 20*1000;
+    static final int SERVICE_TIMEOUT = 120*1000;
 
     // How long we wait for a service to finish executing.
     static final int SERVICE_BACKGROUND_TIMEOUT = SERVICE_TIMEOUT * 10;
@@ -113,7 +113,7 @@ public final class ActiveServices {
     // Maximum amount of time for there to be no activity on a service before
     // we consider it non-essential and allow its process to go on the
     // LRU background list.
-    static final int MAX_SERVICE_INACTIVITY = 30*60*1000;
+    static final int MAX_SERVICE_INACTIVITY = 5*60*1000;
 
     // How long we wait for a background started service to stop itself before
     // allowing the next pending start to run.
@@ -351,16 +351,20 @@ public final class ActiveServices {
             try {
                 // Before going further -- if this app is not allowed to run in the
                 // background, then at this point we aren't going to let it period.
-                final int allowed = mAm.checkAllowBackgroundLocked(
-                        r.appInfo.uid, r.packageName, callingPid, true, service);
-                if (allowed != ActivityManager.APP_START_MODE_NORMAL) {
+		if( mAm.isDeviceIdleMode() ) {
+                    final int allowed = mAm.checkAllowBackgroundLocked(
+                        r.appInfo.uid, r.packageName, callingPid, true, service, r);
+                    if (allowed != ActivityManager.APP_START_MODE_NORMAL) {
+		    /*
                     Slog.w(TAG, "Background start not allowed: service "
                             + service + " to " + r.name.flattenToShortString()
                             + " from pid=" + callingPid + " uid=" + callingUid
                             + " pkg=" + callingPackage
-			    + " caller=" + caller);
-                    return null;
-                }
+			    + " caller=" + caller);*/
+		        Slog.d(TAG, "checkKeep:(3) uid=" + r.appInfo.uid + ", callingUid=" + Binder.getCallingUid() +  ", serviceBlocked=" + r);
+                        return null;
+                    }
+		}
             } finally {
                 Binder.restoreCallingIdentity(token);
             }
@@ -590,9 +594,14 @@ public final class ActiveServices {
         return 0;
     }
 
-    void stopInIdleLocked() {
+    void stopInIdleLocked(boolean deviceIdleMode, boolean lightDeviceIdleMode) {
+
+
+	stopInBackgroundLocked(0,deviceIdleMode,lightDeviceIdleMode);
         // Stop all services with RUN_IN_BACKGROUND disabled
 
+
+	/*
         ArrayList<ServiceRecord> stopping = null;
 
         for (int j = mServiceMap.size() - 1; j >= 0; j--) {
@@ -600,6 +609,9 @@ public final class ActiveServices {
             if (services != null) {
                 for (int i=services.mServicesByName.size()-1; i>=0; i--) {
                     ServiceRecord service = services.mServicesByName.valueAt(i);
+
+
+
                     if (service.startRequested) {
                		if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "stopService: (forced by idle) check " + service + " intent=" + service.intent.getIntent());
 			if(mAm.checkAllowBackgroundLocked(service.appInfo.uid, service.packageName, -1, 
@@ -617,9 +629,12 @@ public final class ActiveServices {
 			}
 
                     }
+
                 }
            }
        	}
+	*/
+	/*
 	if (stopping != null) {
             for (int i=stopping.size()-1; i>=0; i--) {
                 ServiceRecord service = stopping.get(i);
@@ -628,25 +643,57 @@ public final class ActiveServices {
                 // stopServiceLocked(service);
 		bringDownServiceLocked(service);	
             }
-        }
+        }*/
        
     }
 
+    void stopInBackgroundLocked(ServiceRecord service, int uid) {
+        ServiceMap services = mServiceMap.get(UserHandle.getUserId(uid));
+        services.ensureNotStartingBackground(service);
+	bringDownServiceLocked(service);	
+    }
 
-    void stopInBackgroundLocked(int uid) {
+    void stopInBackgroundLocked(int uid, boolean deviceIdleMode, boolean lightDeviceIdleMode) {
         // Stop all services associated with this uid due to it going to the background
         // stopped state.
         ServiceMap services = mServiceMap.get(UserHandle.getUserId(uid));
         ArrayList<ServiceRecord> stopping = null;
+
+	final boolean DEBUG_SERVICE1 = true;
+        //if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "checkKeep: services=" + services);
+        final long nowElapsed = SystemClock.elapsedRealtime();
+
         if (services != null) {
             for (int i=services.mServicesByName.size()-1; i>=0; i--) {
                 ServiceRecord service = services.mServicesByName.valueAt(i);
-                if (service.appInfo.uid == uid && service.startRequested) {
+
+                //if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "checkKeep: service=" + service);
+
+                if ((service.appInfo.uid == uid) || (uid == 0) /*&& service.startRequested*/) {
 			if(mAm.checkAllowBackgroundLocked(service.appInfo.uid, service.packageName, -1, 
-                                   true, service.intent.getIntent()) != ActivityManager.APP_START_MODE_NORMAL  ) {
+                                   true, service.intent.getIntent(), service) != ActivityManager.APP_START_MODE_NORMAL  ) {
+
+
+		if( deviceIdleMode ) {
+		    if( (nowElapsed - service.lastActivity) < 1*30*1000 ) {
+			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(i1) isActive, service=" + service );
+			continue;
+	            }
+		} else if( lightDeviceIdleMode ) {
+		    if( service.isForeground ) {
+			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l1) isForeground, service=" + service );
+			continue;
+		    }
+		    if( (nowElapsed - service.lastActivity) < 5*60*1000 ) {
+			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l1) isActive, service=" + service );
+			continue;
+		    }
+		}
+
 
                     //if (mAm.mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND,
                             //uid, service.packageName) != AppOpsManager.MODE_ALLOWED) {
+                        if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(1) stop service=" + service);
                         if (stopping == null) {
                             stopping = new ArrayList<>();
                             stopping.add(service);
@@ -659,7 +706,7 @@ public final class ActiveServices {
                     ServiceRecord service = stopping.get(i);
                     service.delayed = false;
                     services.ensureNotStartingBackground(service);
-      	            Slog.v(TAG_SERVICE, "stopService: (forced by background) stop " + service + " intent=" + service.intent.getIntent());
+      	            //if (DEBUG_SERVICE) Slog.v(TAG_SERVICE, "stopService: (forced by background) stop " + service + " intent=" + service.intent.getIntent());
                     //stopServiceLocked(service);
 		    bringDownServiceLocked(service);	
                 }
@@ -1529,11 +1576,12 @@ public final class ActiveServices {
 
     private final boolean scheduleServiceRestartLocked(ServiceRecord r,
             boolean allowCancel) {
+
         boolean canceled = false;
 
-	/*if( !canceled ) {
+	if( !canceled ) {
 	    return false;
-	}*/
+	}
 
         if (mAm.isShuttingDownLocked()) {
             Slog.w(TAG, "Not scheduling restart of crashed service " + r.shortName
@@ -2095,7 +2143,7 @@ public final class ActiveServices {
         bringDownServiceLocked(r);
     }
 
-    private final void bringDownServiceLocked(ServiceRecord r) {
+    void bringDownServiceLocked(ServiceRecord r) {
         //Slog.i(TAG, "Bring down service:");
         //r.dump("  ");
 
@@ -2981,7 +3029,7 @@ public final class ActiveServices {
                 mLastAnrDump = sw.toString();
                 mAm.mHandler.removeCallbacks(mLastAnrDumpClearer);
                 mAm.mHandler.postDelayed(mLastAnrDumpClearer, LAST_ANR_LIFETIME_DURATION_MSECS);
-                anrMessage = "executing service " + timeout.shortName;
+                //anrMessage = "executing service " + timeout.shortName;
             } else {
                 Message msg = mAm.mHandler.obtainMessage(
                         ActivityManagerService.SERVICE_TIMEOUT_MSG);
