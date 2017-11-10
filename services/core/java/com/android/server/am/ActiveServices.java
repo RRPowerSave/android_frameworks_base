@@ -676,15 +676,15 @@ public final class ActiveServices {
 
 		if( deviceIdleMode ) {
 		    if( (nowElapsed - service.lastActivity) < 1*30*1000 ) {
-			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(i1) isActive, service=" + service );
-			continue;
+			//if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(i1) isActive, service=" + service );
+			//continue;
 	            }
 		} else if( lightDeviceIdleMode ) {
 		    if( service.isForeground ) {
 			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l1) isForeground, service=" + service );
 			continue;
 		    }
-		    if( (nowElapsed - service.lastActivity) < 5*60*1000 ) {
+		    if( (nowElapsed - service.lastActivity) < 1*60*1000 ) {
 			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l1) isActive, service=" + service );
 			continue;
 		    }

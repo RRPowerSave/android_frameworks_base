@@ -43,6 +43,7 @@ import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.BatteryManagerInternal;
 import android.os.Binder;
+import android.os.FileUtils;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IPowerManager;
@@ -90,6 +91,11 @@ import libcore.util.Objects;
 
 import cyanogenmod.providers.CMSettings;
 
+import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
@@ -116,9 +122,6 @@ public final class PowerManagerService extends SystemService
     private static final String TAG = "PowerManagerService";
 
 
-    private static final String CPUSLEEP_SO_SYSTEM_PROPERTY = "persist.cpusleep_so.enabled";
-
-
     private static final boolean DEBUG = true;
     private static final boolean DEBUG_SPEW = DEBUG && false;
 
@@ -134,6 +137,8 @@ public final class PowerManagerService extends SystemService
     private static final int MSG_WAKE_UP = 5;
 
     private static final int MSG_TOP_APP_CHANGED = 6;
+
+    private static final int MSG_POWER_HINT_TIMEOUT = 7;
 
     // Dirty bit: mWakeLocks changed
     protected static final int DIRTY_WAKE_LOCKS = 1 << 0;
@@ -213,6 +218,11 @@ public final class PowerManagerService extends SystemService
     private static final int BUTTON_ON_DURATION = 5 * 1000;
 
     private static final float PROXIMITY_NEAR_THRESHOLD = 5.0f;
+
+    private static final String WAKE_GESTURE_PATH = "/sys/devices/soc/75ba000.i2c/i2c-12/12-004b/input/input3/wake_gesture";
+
+    private File mWakeGestureFile = null;
+
 
     private final Context mContext;
     private final ServiceThread mHandlerThread;
@@ -461,8 +471,6 @@ public final class PowerManagerService extends SystemService
     // True if the proximity sensor reads a positive result.
     private boolean mProximityPositive;
 
-    private boolean mCpuSleepScreenOn=false;
-
     // Screen brightness setting limits.
     private int mScreenBrightnessSettingMinimum;
     private int mScreenBrightnessSettingMaximum;
@@ -622,7 +630,7 @@ public final class PowerManagerService extends SystemService
             mWakefulness = WAKEFULNESS_AWAKE;
 
             nativeInit();
-            nativeSetAutoSuspend(false);
+            nativeSetAutoSuspend(true);
             nativeSetInteractive(true);
             nativeSetFeature(POWER_FEATURE_DOUBLE_TAP_TO_WAKE, 0);
         }
@@ -791,6 +799,10 @@ public final class PowerManagerService extends SystemService
                     Settings.System.BUTTON_LIGHT_SCREEN),
                     false, mSettingsObserver, UserHandle.USER_ALL);
 
+
+            mWakeGestureFile = new File(WAKE_GESTURE_PATH);
+
+	    enableWakeGestureLocked();
 
             // Go.
             readConfigurationLocked();
@@ -1352,6 +1364,7 @@ public final class PowerManagerService extends SystemService
 
     // Called from native code.
     private void userActivityFromNative(long eventTime, int event, int flags) {
+        Slog.d(TAG, "userActivityFromNative()");
         userActivityInternal(eventTime, event, flags, Process.SYSTEM_UID);
     }
 
@@ -1364,7 +1377,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private boolean userActivityNoUpdateLocked(long eventTime, int event, int flags, int uid) {
-        if (DEBUG_SPEW) {
+        if (DEBUG) {
             Slog.d(TAG, "userActivityNoUpdateLocked: eventTime=" + eventTime
                     + ", event=" + event + ", flags=0x" + Integer.toHexString(flags)
                     + ", uid=" + uid);
@@ -1847,7 +1860,7 @@ public final class PowerManagerService extends SystemService
                             continue;
                         }
                         if (!wakeLock.mDisabled ) {
-			    if( !(mTopAppIsReaderApp && mTopAppUid == wakeLock.mOwnerUid) ) {
+			    if( !(mLightDeviceIdleMode && mTopAppIsReaderApp && mTopAppUid == wakeLock.mOwnerUid) ) {
                                 // We only respect this if the wake lock is not disabled.
                                 mWakeLockSummary |= WAKE_LOCK_CPU;
 			    } else {
@@ -2074,8 +2087,7 @@ public final class PowerManagerService extends SystemService
                     Message msg = mHandler.obtainMessage(MSG_USER_ACTIVITY_TIMEOUT);
                     msg.setAsynchronous(true);
 		    if( mLightDeviceIdleMode ) {
-		        if( !mCpuSleepActivated && mTopAppIsReaderApp && nextTimeout > (now + 1000) ) nextTimeout = now + 1000;
-		        if( !mCpuSleepActivated && mCpuSleepScreenOn && nextTimeout > (now + 5000) ) nextTimeout = now + 5000;
+		        if( mLightDeviceIdleMode && !mCpuSleepActivated && nextTimeout > (now + 1000) ) nextTimeout = now + 1000;
 		    }
                     mHandler.sendMessageAtTime(msg, nextTimeout);
                 }
@@ -2461,9 +2473,14 @@ public final class PowerManagerService extends SystemService
                 mDisplayPowerRequest.dozeScreenBrightness = PowerManager.BRIGHTNESS_DEFAULT;
             }
 
+
+	    if( mDisplayPowerRequest.policy == DisplayPowerRequest.POLICY_OFF ) disableWakeGestureLocked();
+
             mDisplayReady = mDisplayManagerInternal.requestPowerState(mDisplayPowerRequest,
                     mRequestWaitForNegativeProximity);
             mRequestWaitForNegativeProximity = false;
+
+	    if( mDisplayPowerRequest.policy != DisplayPowerRequest.POLICY_OFF ) enableWakeGestureLocked();
 
             if (DEBUG) {
                 Slog.d(TAG, "updateDisplayPowerStateLocked: mDisplayReady=" + mDisplayReady
@@ -2594,11 +2611,8 @@ public final class PowerManagerService extends SystemService
                             setHalAutoSuspendModeLocked(true);
                         }
                     } else {
-			mCpuSleepScreenOn = SystemProperties.getBoolean(CPUSLEEP_SO_SYSTEM_PROPERTY, false);
-            		if (DEBUG) Slog.d(TAG, "CpuSleepScreenOn mode enabled=" + mCpuSleepScreenOn);
-
                         if (!mDecoupleHalAutoSuspendModeFromDisplayConfig) {
-                            setHalAutoSuspendModeLocked(false);
+                           if( !(mLightDeviceIdleMode | mDeviceIdleMode)  ) setHalAutoSuspendModeLocked(false);
                         }
                         if (!mDecoupleHalInteractiveModeFromDisplayConfig) {
                             setHalInteractiveModeLocked(true);
@@ -2638,14 +2652,14 @@ public final class PowerManagerService extends SystemService
     private void updateSuspendBlockerLocked() {
         final boolean needWakeLockSuspendBlocker = ((mWakeLockSummary & WAKE_LOCK_CPU) != 0);
         final boolean needDisplaySuspendBlocker = needDisplaySuspendBlockerLocked();
-        final boolean autoSuspend = mDeviceIdleMode || mLightDeviceIdleMode; // || !needDisplaySuspendBlocker;
+        final boolean autoSuspend = mDeviceIdleMode || mLightDeviceIdleMode || !needDisplaySuspendBlocker;
         final boolean interactive = mDisplayPowerRequest.isBrightOrDim();
 
         // Disable auto-suspend if needed.
         // FIXME We should consider just leaving auto-suspend enabled forever since
         // we already hold the necessary wakelocks.
-        if (!autoSuspend && mDecoupleHalAutoSuspendModeFromDisplayConfig) {
-            setHalAutoSuspendModeLocked(false);
+        if (!autoSuspend /*&& mDecoupleHalAutoSuspendModeFromDisplayConfig */) {
+	    if( !mLightDeviceIdleMode && !mDeviceIdleMode ) setHalAutoSuspendModeLocked(false);
         }
 
         // First acquire suspend blockers if needed.
@@ -2685,7 +2699,7 @@ public final class PowerManagerService extends SystemService
         }
 
         // Enable auto-suspend if needed.
-        if (autoSuspend /*&& mDecoupleHalAutoSuspendModeFromDisplayConfig*/) {
+        if (autoSuspend /*&& (mDecoupleHalAutoSuspendModeFromDisplayConfig | mLightDeviceIdleMode)*/) {
 	    if( DEBUG_SPEW ) Slog.d(TAG, "enable autosuspend");
             setHalAutoSuspendModeLocked(true);
         }
@@ -2704,11 +2718,17 @@ public final class PowerManagerService extends SystemService
 
         mUserInactive = false;
 
+
         final long now = SystemClock.uptimeMillis();
 
 	if( mDeviceIdleMode ) {
 	    mCpuSleepActivated = false;
 	    return false;
+	}
+
+	if( keepAutoSuspendBlockerLocked() ) {
+	    mCpuSleepActivated = false;
+	    return true;
 	}
 
 	if( mLightDeviceIdleMode &&  
@@ -2719,25 +2739,26 @@ public final class PowerManagerService extends SystemService
 		return false;	
 	}
 
+
 	if (mLightDeviceIdleMode) {
 
 	    //updateTopAppLocked(0);
 
-	    if( mTopAppIsReaderApp ) {
-	        if( ((mLastUserActivityTimeNoChangeLights + 1000) < now) &&
-	            ((mLastButtonActivityTime + 1000) < now) &&
-	            ((mLastUserActivityTime + 1000) < now) )  {
-			if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: reader mode timeout");
+	    if( mLightDeviceIdleMode ) {
+	        if( ((mLastUserActivityTimeNoChangeLights + 500) < now) &&
+	            ((mLastButtonActivityTime + 500) < now) &&
+	            ((mLastUserActivityTime + 500) < now) )  {
+			if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: reader mode timeout dsb=false");
 		        mUserInactive = true;
 	        }
-	    } else if( mCpuSleepScreenOn ) {
+	    } /*else if( mCpuSleepScreenOn ) {
 	        if( ((mLastUserActivityTimeNoChangeLights + 5000) < now) &&
 	            ((mLastButtonActivityTime + 5000) < now) &&
 	            ((mLastUserActivityTime + 5000) < now) )  {
 			if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: cpusleep mode timeout");
 		        mUserInactive = true;
 	        }
-	    }
+	    }*/
 
 
 	    if( DEBUG ) Slog.d(TAG, "DisplaySuspendBlocker: now=" + now + 
@@ -2776,7 +2797,7 @@ public final class PowerManagerService extends SystemService
     }
 
     private void setHalAutoSuspendModeLocked(boolean enable) {
-        if (enable != mHalAutoSuspendModeEnabled) {
+        /*if (enable != mHalAutoSuspendModeEnabled) {*/
             if (DEBUG) {
                 Slog.d(TAG, "Setting HAL auto-suspend mode to " + enable);
             }
@@ -2787,7 +2808,7 @@ public final class PowerManagerService extends SystemService
             } finally {
                 Trace.traceEnd(Trace.TRACE_TAG_POWER);
             }
-        }
+        /*}*/
     }
 
     private void setHalInteractiveModeLocked(boolean enable) {
@@ -3003,10 +3024,10 @@ public final class PowerManagerService extends SystemService
     void updateUidProcStateInternal(int uid, int procState) {
         synchronized (mLock) {
             mUidState.put(uid, procState);
-	    if( DEBUG_SPEW ) Slog.i(TAG, "updateUidProcStateInternal: uid=" + uid + ", procState=" + procState);
+	    //if( DEBUG_SPEW ) 
+	    Slog.i(TAG, "updateUidProcStateInternal: uid=" + uid + ", procState=" + procState);
 	    //if (mDeviceIdleMode) {
-	    if( procState == 2 ) {
-		//updateTopAppLocked(uid);
+	    if( procState < 3 ) {
                 Message msg = mHandler.obtainMessage(MSG_TOP_APP_CHANGED);
                 msg.setAsynchronous(true);
                 mHandler.sendMessage(msg);
@@ -3032,6 +3053,10 @@ public final class PowerManagerService extends SystemService
 	ActivityManager.RunningTaskInfo task = getRunningTask();
 	if( task == null ) {
 	    mTopAppIsReaderApp = false;
+	    mTopAppUid = 1000;
+	    mTopAppPackageName = "android";
+	    staticReaderApp = false;
+	    Slog.i(TAG, "updateUidProcStateInternal: can't get foreground task" );
 	    return;
 	}
 	Slog.i(TAG, "updateUidProcStateInternal: running task top=" + task.topActivity + ", base=" + task.baseActivity );
@@ -3050,14 +3075,20 @@ public final class PowerManagerService extends SystemService
 	try {
        	   app_uid = mContext.getPackageManager().getApplicationInfo(packageName, 0).uid;
 	} catch(PackageManager.NameNotFoundException e) {
-	    //mTopAppIsReaderApp = false;
+	    mTopAppIsReaderApp = false;
+	    mTopAppUid = 1000;
+	    staticReaderApp = false;
+	    Slog.i(TAG, "updateUidProcStateInternal: can't get app_uid for pkg=" + packageName );
 	    return;
 	}
 	
 		
 
 	if( app_uid == -1 ) {
-	    //mTopAppIsReaderApp = false;
+	    Slog.i(TAG, "updateUidProcStateInternal: invalid uid for pkg=" + packageName );
+	    mTopAppIsReaderApp = false;
+	    mTopAppUid = 1000;
+	    staticReaderApp = false;
 	    return;
 	}
 
@@ -3069,7 +3100,7 @@ public final class PowerManagerService extends SystemService
                     if (mAppOps != null &&
                         mAppOps.noteOperation(AppOpsManager.OP_WAKE_LOCK, app_uid, mLastForegroungPackage)
                         == AppOpsManager.MODE_IGNORED) {
-                        //if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: reader mode app " + packageName);
+                        Slog.d(TAG, "updateCpuSleepMode: reader mode app " + packageName);
 		        isReaderModeApp = true;
                     } else {
                         //if( DEBUG ) Slog.d(TAG, "updateCpuSleepMode: not reader mode app " + packageName);
@@ -3127,7 +3158,7 @@ public final class PowerManagerService extends SystemService
         if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK)
                 == PowerManager.PARTIAL_WAKE_LOCK) {
             boolean disabled = false;
-            if ( (mDeviceIdleMode || mLightDeviceIdleMode) &&
+            if ( (mDeviceIdleMode /*|| mLightDeviceIdleMode*/) &&
 		(wakeLock.mFlags & (
 			WAKE_LOCK_SCREEN_BRIGHT |
 			WAKE_LOCK_SCREEN_DIM |
@@ -3144,7 +3175,16 @@ public final class PowerManagerService extends SystemService
 		!wakeLock.mTag.contains("GcmIntent") ) {
 
 		if( wakeLock.mTag.startsWith("*sync*") ||
-		    wakeLock.mTag.startsWith("*job*") 
+		    wakeLock.mTag.startsWith("*job*") ||
+		    wakeLock.mTag.startsWith("GCoreFlp") ||
+		    wakeLock.mTag.startsWith("NetworkStats") ||
+		    wakeLock.mTag.startsWith("*net_scheduler*") ||
+		    wakeLock.mTag.startsWith("Gnss") ||
+		    wakeLock.mTag.startsWith("Nlp") ||
+		    wakeLock.mTag.startsWith("RILJ") ||
+		    wakeLock.mTag.startsWith("SyncLoop") ||
+		    wakeLock.mTag.startsWith("SyncMgr") ||
+		    wakeLock.mTag.startsWith("bugle_") 
 		  )
 		{
 			disabled = true;
@@ -3200,7 +3240,7 @@ public final class PowerManagerService extends SystemService
 
 	    String tag = wakeLock.mTag;
 
-	    if( !disabled ) {
+	    if( !disabled && mDeviceIdleMode ) {
 	        if (!mSeenWakeLocks.contains(tag) && mDeviceIdleMode){
                     if ((wakeLock.mFlags & PowerManager.WAKE_LOCK_LEVEL_MASK) == PowerManager.PARTIAL_WAKE_LOCK){
                         mSeenWakeLocks.add(tag);
@@ -3355,8 +3395,146 @@ public final class PowerManagerService extends SystemService
         }
     }
 
+    private int mAutoSuspendBlockerSummary = 0;
+    private long mLastHintInteractive = 0;
+    private long mInteractiveHintTimeout = 0;
+    private long mNextAutoSuspendBlockerCheck = 0;
+
+
+    private void handlePowerHintTimeout() {
+        synchronized (mLock) {
+            if (DEBUG) {
+                Slog.d(TAG, "handlePowerHintTimeout");
+            }
+
+            final long now = SystemClock.uptimeMillis();
+	    long next = now + 500;
+
+	    if( mInteractiveHintTimeout <= now ) { 
+	        mAutoSuspendBlockerSummary &= ~HINT_INTERACTION;
+	        mInteractiveHintTimeout = 0;
+	    } else {
+                Message msg = mHandler.obtainMessage(MSG_POWER_HINT_TIMEOUT);
+                msg.setAsynchronous(true);
+                mHandler.sendMessageAtTime(msg, mInteractiveHintTimeout);
+	    }
+	    updateSuspendBlockerLocked();
+	}
+
+    }
+
+    private boolean keepAutoSuspendBlockerLocked() {
+	if( mDeviceIdleMode ) {
+	    mAutoSuspendBlockerSummary = 0;
+	    return false;
+	}
+	if( !mLightDeviceIdleMode ) return true;
+	return mAutoSuspendBlockerSummary != 0;
+    }
+
+    private static final int HINT_VSYNC = (1 << 0);
+    private static final int HINT_INTERACTION = (1 << 1);
+    private static final int HINT_VIDEO_ENCODE = (1 << 2);
+    private static final int HINT_VIDEO_DECODE = (1 << 3);
+    private static final int HINT_LOW_POWER = (1 << 4);
+    private static final int HINT_SUSTAINED_PERFORMANCE = (1 << 5);
+    private static final int HINT_VR_MODE = (1 << 6);
+    private static final int HINT_LAUNCH = (1 << 7);
+    private static final int HINT_DISABLE_TOUCH = (1 << 8);
+    private static final int HINT_CPU_BOOST = (1 << 9);
+
     private void powerHintInternal(int hintId, int data) {
-        //Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
+
+        final long now = SystemClock.uptimeMillis();
+
+	int oldSummary = mAutoSuspendBlockerSummary;
+
+
+	switch(hintId) {
+	    case 1: // POWER_HINT_VSYNC = 0x00000001,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_VSYNC data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_VSYNC;
+	    	else mAutoSuspendBlockerSummary &= ~HINT_VSYNC;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 2: // POWER_HINT_INTERACTION = 0x00000002,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_INTERACTION data=" + data);
+		mAutoSuspendBlockerSummary |= HINT_INTERACTION;
+		long next = now + data;
+		if( mInteractiveHintTimeout < next ) mInteractiveHintTimeout = next;
+		if( mInteractiveHintTimeout < now + 1000 ) mInteractiveHintTimeout = now + 1000; 
+        	break;
+	    case 3: // POWER_HINT_VIDEO_ENCODE = 0x00000003,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_VIDEO_ENCODE data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_VIDEO_ENCODE;
+		else mAutoSuspendBlockerSummary &= ~HINT_VIDEO_ENCODE;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 4: // POWER_HINT_VIDEO_DECODE = 0x00000004,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_VIDEO_DECODE data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_VIDEO_DECODE;
+		else mAutoSuspendBlockerSummary &= ~HINT_VIDEO_DECODE;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 5: // POWER_HINT_LOW_POWER = 0x00000005,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_LOW_POWER data=" + data);
+		nativeSendPowerHint(hintId, data);
+        	return;
+    	    case 6: // POWER_HINT_SUSTAINED_PERFORMANCE = 0x00000006,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_SUSTAINED_PERFORMANCE data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_SUSTAINED_PERFORMANCE;
+		else mAutoSuspendBlockerSummary &= ~HINT_SUSTAINED_PERFORMANCE;
+        	break;
+    	    case 7: // POWER_HINT_VR_MODE = 0x00000007,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_VR_MODE data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_VR_MODE;
+		else mAutoSuspendBlockerSummary &= ~HINT_VR_MODE;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 8: // POWER_HINT_LAUNCH = 0x00000008,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_LAUNCH data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_LAUNCH;
+		else mAutoSuspendBlockerSummary &= ~HINT_LAUNCH;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 9: // POWER_HINT_DISABLE_TOUCH = 0x00000009,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_DISABLE_TOUCH data=" + data);
+		nativeSendPowerHint(hintId, data);
+        	return;
+
+    // CM hints
+    	    case 0x110: // POWER_HINT_CPU_BOOST    = 0x00000110,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_CPU_BOOST data=" + data);
+		if( data != 0 ) mAutoSuspendBlockerSummary |= HINT_CPU_BOOST;
+		else mAutoSuspendBlockerSummary &= ~HINT_CPU_BOOST;
+		mNextAutoSuspendBlockerCheck = now + 100;
+        	break;
+    	    case 0x111: // POWER_HINT_SET_PROFILE  = 0x00000111,
+        	Slog.d(TAG, "powerHintInternal: POWER_HINT_SET_PROFILE data=" + data);
+		nativeSendPowerHint(hintId, data);
+        	return;
+	    default:
+        	Slog.d(TAG, "powerHintInternal: hint=" + hintId + ", data=" + data);
+		nativeSendPowerHint(hintId, data);
+        	return;
+	}
+
+        mHandler.removeMessages(MSG_POWER_HINT_TIMEOUT);
+
+/*
+	if( mInteractiveHintTimeout > 0 && mInteractiveHintTimeout < mNextAutoSuspendBlockerCheck ) mNextAutoSuspendBlockerCheck = mInteractiveHintTimeout;
+	else {
+	    mInteractiveHintTimeout = 0;
+	    mNextAutoSuspendBlockerCheck = now + 500;
+	}
+*/
+    	if( mLightDeviceIdleMode ) {
+            Message msg = mHandler.obtainMessage(MSG_POWER_HINT_TIMEOUT);
+            msg.setAsynchronous(true);
+            mHandler.sendMessage(msg) ;// , mNextAutoSuspendBlockerCheck);
+	}
+
+	
         nativeSendPowerHint(hintId, data);
     }
 
@@ -3709,6 +3887,9 @@ public final class PowerManagerService extends SystemService
                 case MSG_TOP_APP_CHANGED:
                     handleTopAppChanged();
                     break;
+		case MSG_POWER_HINT_TIMEOUT:
+		    handlePowerHintTimeout();
+		    break;
             }
         }
     }
@@ -4084,6 +4265,13 @@ public final class PowerManagerService extends SystemService
             if (eventTime > now) {
                 throw new IllegalArgumentException("event time must not be in the future");
             }
+
+             Slog.i(TAG, "External userActivity() call" 
+                                + " pid=" + Binder.getCallingPid()
+                                + " uid=" + Binder.getCallingUid(), new Throwable());
+
+            //Slog.wtf(TAG, "No home screen found for " + intent, new Throwable());
+
 
             final int uid = Binder.getCallingUid();
             final long ident = Binder.clearCallingIdentity();
@@ -4744,6 +4932,44 @@ public final class PowerManagerService extends SystemService
         }
     }
 
+    private static boolean mWakeGestureEnabled = false;
+    private void disableWakeGestureLocked() {
+	setWakeGestureLocked(false);
+    }
+
+    private void enableWakeGestureLocked() {
+	setWakeGestureLocked(true);
+    }
+
+    private void setWakeGestureLocked(boolean enabled) {
+
+	if( mWakeGestureEnabled == enabled ) return;
+	mWakeGestureEnabled = enabled;
+
+        FileWriter writer = null;
+
+	String value = enabled ? "1" : "0";
+
+    	if( DEBUG ) Slog.w(TAG, "Set wake_gesture " + enabled);
+        
+        try {
+            writer = new FileWriter(mWakeGestureFile, false);
+            writer.write(value);
+            writer.flush();
+        } catch (Exception e) {
+    		if( DEBUG ) Slog.w(TAG, "Set wake_gesture exception " + e, new Throwable());
+        } finally {
+            if (writer != null) {
+                try {
+                    writer.close();
+                } catch (Exception e1) {
+                }
+            }
+        }
+
+    }
+
+
     private static int mGmsUid = -1;
     public static int getGmsUid() {
 	return mGmsUid;
@@ -4822,41 +5048,71 @@ public final class PowerManagerService extends SystemService
     private static Set<String> mSeenServices = new HashSet<String>();
 
 
-    public static boolean isWhitelistedInSemiIdleService(String packageName,String cls, String act) {
-	if( packageName == null ) return true;
+    public static boolean isBlacklistedInSemiIdleService(String packageName,String cls, String act) {
+
+//        Slog.d(TAG, "checkKeep:(8) check service semiidle pkg=" + packageName + ", cls=" + cls + ", act=" + act);
+
+	if( packageName == null ) return false;
 	else if( packageName.equals("com.google.android.gms") ) {
 	    if( cls != null ) {
-		if( cls.contains("com.google.android.gms.usagereporting") ) return false;
-		if( cls.contains("com.google.android.gms.location.reporting.service") ) return false;
-		if( cls.contains("com.google.android.gms.clearcut") ) return false;
-		if( cls.contains("com.google.android.gms.measurement") ) return false;
-		if( cls.contains("com.google.android.gms.stats") ) return false;
-		if( cls.contains("com.google.android.gms.nearby") ) return false;
+		if( cls.contains("com.google.android.gms.usagereporting") ) return true;
+		if( cls.contains("com.google.android.gms.location.reporting.service") ) return true;
+		if( cls.contains("com.google.android.gms.clearcut") ) return true;
+		if( cls.contains("com.google.android.gms.measurement") ) return true;
+		if( cls.contains("com.google.android.gms.stats") ) return true;
+		if( cls.contains("com.google.android.gms.nearby") ) return true;
 //		if( cls.contains("com.google.location.nearby") ) return false;
 	    }
 	    if( act != null ) {
-		if( act.contains("com.google.android.gms.stats") ) return false;
-		if( act.contains("com.google.android.gms.nearby") ) return false;
+		if( act.contains("com.google.android.gms.stats") ) return true;
+		if( act.contains("com.google.android.gms.nearby") ) return true;
 //		if( act.contains("com.google.location.nearby") ) return false;
-		if( act.contains("com.google.android.location.internal.GMS_NLP") ) return false;
-		if( act.contains("com.google.android.gms.measurement") ) return false;
+//		if( act.contains("com.google.android.location.internal.GMS_NLP") ) return false;
+		if( act.contains("com.google.android.gms.measurement") ) return true;
 	    }
 	} else if( packageName.equals("com.viber.voip") ) {
+		return false;
+	} else if( packageName.equals("com.whatsapp") ) {
+		return false;
+	} else if( packageName.equals("ru.yandex.weatherplugin") ) {
+		if( cls != null && cls.contains("ru.yandex.weatherplugin.widgets.updater.WidgetService") ) return false;
+	} else if( packageName.equals("org.telegram.messenger") ) {
+		return false;
+	} else if( packageName.equals("com.microsoft.cortana") ) {
+		return false;
+	} 
+
+	return false;
+    }
+
+    public static boolean isWhitelistedPackage(String packageName) {
+	if( packageName.equals("com.viber.voip") ) {
 		return true;
 	} else if( packageName.equals("com.whatsapp") ) {
 		return true;
-	} else if( packageName.equals("ru.yandex.weatherplugin") ) {
-		if( cls != null && cls.contains("ru.yandex.weatherplugin.widgets.updater.WidgetService") ) return true;
 	} else if( packageName.equals("org.telegram.messenger") ) {
 		return true;
-	}
+	} else if( packageName.equals("com.microsoft.cortana") ) {
+		return true;
+	}  else if( packageName.startsWith("com.skype") ) {
+		return true;
+	}  else if( packageName.equals("com.microsoft.office.outlook") ) {
+		return true;
+	}  else if( packageName.equals("com.google.android.gms") ) {
+		return true;
+	}  else if( packageName.equals("com.google.process.gapps") ) {
+		return true;
+	}  else if( packageName.equals("com.google.android.gsf") ) {
+		return true;
+	} 
 
-	return true;
+
+	return false;
     }
-    
 
     public static boolean isWhitelistedService(String packageName,String cls, String act) {
 
+//        Slog.d(TAG, "checkKeep:(8) check service pkg=" + packageName + ", cls=" + cls + ", act=" + act);
 
 	if( packageName == null ) return true;
 	else if( packageName.equals("com.google.android.gms") ) {
@@ -4864,10 +5120,9 @@ public final class PowerManagerService extends SystemService
 		if( cls.contains("com.google.android.gms.auth") ) return true;
 		if( cls.contains("com.google.android.gms.gcm") ) return true;
 
-		if( cls.contains("com.google.android.gms.backup.BackupTransportService") ) return true;
-
-		if( cls.contains("com.google.android.gms.chimera.GmsIntentOperationService") ) return true;
-		if( cls.contains("com.google.android.gms.chimera.PersistentBoundBrokerService") ) return true;
+		//if( cls.contains("com.google.android.gms.backup.BackupTransportService") ) return true;
+		//if( cls.contains("com.google.android.gms.chimera.GmsIntentOperationService") ) return true;
+		//if( cls.contains("com.google.android.gms.chimera.PersistentBoundBrokerService") ) return true;
 		if( cls.contains("com.google.android.gms.config.ConfigService") ) return true;
 		if( cls.contains("com.google.android.gms.deviceconnection.service.DeviceConnectionWatcherService") ) return true;
 		if( cls.contains("com.google.android.gms.lockbox") ) return true;
@@ -4877,8 +5132,8 @@ public final class PowerManagerService extends SystemService
 		if( cls.contains("com.google.android.gms.tapandpay") ) return true;
 		if( cls.contains("com.google.android.gms.gass") ) return true;
 		if( cls.contains("com.google.android.gms.trustagent") ) return true;
-		if( cls.contains("com.google.android.location.internal.server.GoogleLocationService") ) return true;
-		if( cls.contains("com.google.android.location.internal.PendingIntentCallbackService") ) return true;
+		//if( cls.contains("com.google.android.location.internal.server.GoogleLocationService") ) return true;
+		//if( cls.contains("com.google.android.location.internal.PendingIntentCallbackService") ) return true;
 	    }
 	    if( act != null ) {
 		if( act.contains("com.google.android.c2dm") ) return true;
@@ -4886,8 +5141,8 @@ public final class PowerManagerService extends SystemService
 		if( act.contains("com.google.android.gms.config") ) return true;
 		if( act.contains("com.google.android.gms.droidguard") ) return true;
 		if( act.contains("com.google.android.gms.common") ) return true;
-		if( act.contains("com.google.android.location.internal.action.FLP_LOW_POWER_LOCATION_RESULT") ) return true;
-		if( act.contains("com.google.android.location.internal.GoogleLocationManagerService") ) return true;
+		//if( act.contains("com.google.android.location.internal.action.FLP_LOW_POWER_LOCATION_RESULT") ) return true;
+		//if( act.contains("com.google.android.location.internal.GoogleLocationManagerService") ) return true;
 	    }
 	//} else if( packageName.startsWith("com.android") && !packageName.startsWith("com.android.chrome") ) {
 	//	return true;
@@ -4901,7 +5156,12 @@ public final class PowerManagerService extends SystemService
 		return true;
 	} else if( packageName.equals("com.microsoft.cortana") ) {
 		return true;
+	}  else if( packageName.startsWith("com.skype") ) {
+		return true;
+	}  else if( packageName.equals("com.microsoft.office.outlook") ) {
+		return true;
 	} 
+
 
 
 	String sPkg = packageName;
@@ -4948,7 +5208,9 @@ public final class PowerManagerService extends SystemService
 
     
 
-    public static boolean isWhitelistedService(Intent intent) {
+    public static boolean isWhitelistedService(String packageName,Intent intent) {
+
+//        Slog.d(TAG, "checkKeep:(10) check intent=" + intent + ", pkg=" + packageName);
 
 	ComponentName cmp = intent.getComponent();
 	String cls=null;
@@ -4956,6 +5218,7 @@ public final class PowerManagerService extends SystemService
 	if( cmp != null ) {
 	    pkg = cmp.getPackageName();
 	    cls = cmp.getClassName();
+	    if( pkg == null ) pkg = packageName;
  	    if( cls != null ) {
 		if( isWhitelistedService(pkg,cls,null) ) return true;
 	    }
@@ -4963,6 +5226,7 @@ public final class PowerManagerService extends SystemService
 
 	String act = intent.getAction();
 	pkg = intent.getPackage();
+        if( pkg == null ) pkg = packageName;
 	if( act != null ) {
 	    if( isWhitelistedService(pkg,null,act) ) return true;
 	}
@@ -4970,7 +5234,7 @@ public final class PowerManagerService extends SystemService
 	return false;
     }
 
-    public static boolean isWhitelistedInSemiIdleService(Intent intent) {
+    public static boolean isBlacklistedInSemiIdleService(String packageName,Intent intent) {
 
 	ComponentName cmp = intent.getComponent();
 	String cls=null;
@@ -4978,15 +5242,17 @@ public final class PowerManagerService extends SystemService
 	if( cmp != null ) {
 	    pkg = cmp.getPackageName();
 	    cls = cmp.getClassName();
+	    if( pkg == null ) pkg = packageName;
  	    if( cls != null ) {
-		if( isWhitelistedInSemiIdleService(pkg,cls,null) ) return true;
+		if( isBlacklistedInSemiIdleService(pkg,cls,null) ) return true;
 	    }
 	}
 
 	String act = intent.getAction();
 	pkg = intent.getPackage();
+        if( pkg == null ) pkg = packageName;
 	if( act != null ) {
-	    if( isWhitelistedInSemiIdleService(pkg,null,act) ) return true;
+	    if( isBlacklistedInSemiIdleService(pkg,null,act) ) return true;
 	}
         //Slog.d(TAG, "checkKeep:(5) blocked intent=" + intent + ", pkg=" + pkg + ", cls=" + cls + ", act=" + act);
 	return false;

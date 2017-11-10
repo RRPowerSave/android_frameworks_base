@@ -8163,8 +8163,8 @@ public final class ActivityManagerService extends ActivityManagerNative
 
     public int getAppStartMode(int uid, String packageName) {
         synchronized (this) {
-	    if( !mDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
-            return checkAllowBackgroundLocked(uid, packageName, -1, true, null, null);
+	    /*if( !mDeviceIdleMode )*/ return ActivityManager.APP_START_MODE_NORMAL;
+            //return checkAllowBackgroundLocked(uid, packageName, -1, true, null, null);
         }
     }
 
@@ -8175,30 +8175,35 @@ public final class ActivityManagerService extends ActivityManagerNative
     int checkAllowBackgroundLocked(int uid, String packageName, int callingPid,
             boolean allowWhenForeground, Intent intent, ServiceRecord service) {
 
-	if( uid < 10000 ) return ActivityManager.APP_START_MODE_NORMAL;
+	//if( uid < 10000 ) return ActivityManager.APP_START_MODE_NORMAL;
+
+	/*if( mDeviceIdleMode ) {
+		Slog.d(TAG,"checkAllowBackgroundLocked packageName=" + packageName + ",  intent=" + intent + ", service=" + service, new Throwable());
+	}*/
 
 	boolean isReaderMode = PowerManagerService.isReaderMode();
 
 	if( !mDeviceIdleMode && !isReaderMode && !mLightDeviceIdleMode ) return ActivityManager.APP_START_MODE_NORMAL;
 
-	if( mLightDeviceIdleMode ) {
+	if( mLightDeviceIdleMode && !mDeviceIdleMode && !isReaderMode ) {
 	    if( intent == null && service == null ) return ActivityManager.APP_START_MODE_NORMAL;
-	    if( intent != null && PowerManagerService.isWhitelistedInSemiIdleService(intent) ) {
-	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Gcm intent uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
-		return ActivityManager.APP_START_MODE_NORMAL;
+	    if( intent != null && PowerManagerService.isBlacklistedInSemiIdleService(packageName,intent) ) {
+	    	if (DEBUG_SERVICE) Slog.d(TAG,"Blocked execution: SemiIdle - intent uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
+		return ActivityManager.APP_START_MODE_DISABLED;
 	    }
 
-	    if( service != null && PowerManagerService.isWhitelistedInSemiIdleService(service.name.getPackageName(),service.name.getClassName(),null) ) {
-	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Gcm service uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
-		return ActivityManager.APP_START_MODE_NORMAL;
+	    if( service != null && PowerManagerService.isBlacklistedInSemiIdleService(service.name.getPackageName(),service.name.getClassName(),null) ) {
+	    	if (DEBUG_SERVICE) Slog.d(TAG,"Blocked execution: SemiIdle - service uid=" + uid + ", pkg=" + service.name.getPackageName() + ", class=" + service.name.getClassName() );
+		return ActivityManager.APP_START_MODE_DISABLED;
 	    }
-		
-            return ActivityManager.APP_START_MODE_DISABLED;
+
+  	    Slog.d(TAG,"Allowed execution: SemiIdle - uid=" + uid + ", intent=" + intent + ", service=" + service);
+            return ActivityManager.APP_START_MODE_NORMAL;
 	}
 
 
         UidRecord uidRec = mActiveUids.get(uid);
-        if (/*mLightDeviceIdleMode*/ isReaderMode  && !mDeviceIdleMode) {
+        if ( (mLightDeviceIdleMode || isReaderMode) && !mDeviceIdleMode) {
             if ((uidRec != null
                     && uidRec.curProcState >=0 && uidRec.curProcState < ActivityManager.PROCESS_STATE_IMPORTANT_BACKGROUND) || uidRec == null ) {
 	    	    if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: important app uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
@@ -8206,19 +8211,22 @@ public final class ActivityManagerService extends ActivityManagerNative
             }
         }
 
-	if( intent != null && PowerManagerService.isWhitelistedService(intent) ) {
-	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Gcm intent uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
+	if( intent != null && PowerManagerService.isWhitelistedService(packageName, intent) ) {
+	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Whitelisted intent uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
 		return ActivityManager.APP_START_MODE_NORMAL;
 	}
 
 	if( service != null && PowerManagerService.isWhitelistedService(service.name.getPackageName(),service.name.getClassName(),null) ) {
-	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Gcm service uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
+	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: Whitelisted service uid=" + uid + ", pkg=" + service.name.getPackageName() + ", class=" + service.name.getClassName() );
 		return ActivityManager.APP_START_MODE_NORMAL;
 	}
 
 	if( PowerManagerService.isGmsUid(uid) ) {
 	    if( intent == null && service == null ) {
 	    	if (DEBUG_SERVICE) Slog.d(TAG,"Allowed execution: unknown GMS app uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
+
+            	Log.wtf(TAG, "Allowed execution: unknown GMS ",new Throwable());
+
 		return ActivityManager.APP_START_MODE_NORMAL;
 	    }
 	}
@@ -8226,8 +8234,8 @@ public final class ActivityManagerService extends ActivityManagerNative
 
 
 	if (mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, uid,
-                packageName) != AppOpsManager.MODE_ALLOWED) {
-	    Slog.d(TAG,"checkKeep:(4) Blocked execution: idle=" + mDeviceIdleMode + ", light=" + mLightDeviceIdleMode + ", uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
+                packageName) == AppOpsManager.MODE_IGNORED) {
+	    if (DEBUG_SERVICE) Slog.d(TAG,"checkKeep:(4) Blocked execution: idle=" + mDeviceIdleMode + ", light=" + mLightDeviceIdleMode + ", uid=" + uid + ", pkg=" + packageName + " intent=" + intent);
             return ActivityManager.APP_START_MODE_DISABLED;
         }
 
@@ -21549,7 +21557,7 @@ public final class ActivityManagerService extends ActivityManagerNative
 
 
 		
-		if( (mDeviceIdleMode || mLightDeviceIdleMode) /*&& !PowerManagerService.isGmsUid(app.info.uid) */ ) {
+		if(mDeviceIdleMode) {
                     try {
 			boolean allowed = false;
        			UidRecord uidRec = mActiveUids.get(app.info.uid);
@@ -21565,11 +21573,15 @@ public final class ActivityManagerService extends ActivityManagerNative
 	                    if (!allowed && mAppOpsService != null) {
 	                        if( mAppOpsService.noteOperation(AppOpsManager.OP_RUN_IN_BACKGROUND, app.info.uid, app.info.packageName)
 	                            == AppOpsManager.MODE_IGNORED) {
-                		        // This uid is actually running...  should it be considered background now?
                 		        uidRec.idle = true;
+	            	                //Slog.d(TAG, "checkKeepRunnig: Killing services: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
                     			doStopUidLocked(uidRec.uid, uidRec, app.services );
-			                //app.kill("app not allowed to run in idle mode", true);
-	            	                //if (DEBUG_SERVICE) Slog.d(TAG, "checkKeepRunnig: blocked: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
+					if( app.curProcState == mTopProcessState ) {
+					    Slog.d(TAG, "checkKeepRunnig: Not Killing Top app=" + app);
+					} else if( app.services.size() <= 0 && !PowerManagerService.isWhitelistedPackage(app.info.packageName)) {
+	            	                    Slog.d(TAG, "checkKeepRunnig: Killing app=" + app);
+					    app.kill("app not allowed to run in idle mode", true);
+					}
 		                } else {
 	                            //Slog.d(TAG, "checkKeepRunnig: allowed: pkg=" + app.info.packageName + ", uid=" + app.info.uid);
 	                        }
@@ -21933,15 +21945,15 @@ public final class ActivityManagerService extends ActivityManagerNative
 
 		if( mDeviceIdleMode ) {
 		    if( (nowElapsed - service.lastActivity) < 1*30*1000 ) {
-			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(i2) isActive, service=" + service );
-			continue;
+			//if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(i2) isActive, service=" + service );
+			//continue;
 	            }
 		} else if( mLightDeviceIdleMode ) {
 		    if( service.isForeground ) {
 			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l2) isForeground, service=" + service );
 			continue;
 		    }
-		    if( (nowElapsed - service.lastActivity) < 5*60*1000 ) {
+		    if( (nowElapsed - service.lastActivity) < 1*60*1000 ) {
 			if (DEBUG_SERVICE1) Slog.v(TAG_SERVICE, "checkKeep:(l2) isActive, service=" + service );
 			continue;
 		    }

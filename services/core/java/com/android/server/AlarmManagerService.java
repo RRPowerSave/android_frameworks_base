@@ -1159,24 +1159,21 @@ class AlarmManagerService extends SystemService {
 
             Slog.e(TAG, "RTC Alarm: " + type + " " + blockTag);
 
-	    
  	    int appid = 0;
 
-
-            //if ( blockTag.contains("com.google.android.gms.gcm.HEARTBEAT_ALARM") ||
-	    //     blockTag.contains("com.google.android.gms.gcm.ACTION_CHECK_QUEUE") ||
-            //  !( blockTag.contains("com.google.android.gms.gcm") 
-	    //   | blockTag.contains("com.google.android.intent.action.GCM_RECONNECT")
-	    //   | blockTag.contains("firebase") ) ){
-
+	    if( callingPackage != null && callingPackage.equals("com.google.android.deskclock") ) {
+		blockAlarm = false;
+	    } else if( blockTag.contains("com.android.internal.telephony.data") ||
+		blockTag.contains("*sync") ||
+		blockTag.contains("*job") ) {
+		    blockAlarm = true;
+	    } else {
                 if (workSource != null && workSource.getName(0) != null) {
                     appid = UserHandle.getAppId(workSource.get(0));
 	        } else {
 	            appid = UserHandle.getAppId(callingUid);
 	        }
 
-                // If we are in idle mode, we will ignore all partial wake locks that are
-                // for application uids that are not whitelisted.
 		if( appid >= Process.FIRST_APPLICATION_UID ) {
                     if (mDeviceIdleUserWhitelist == null ) {
 			blockAlarm = true;
@@ -1184,7 +1181,7 @@ class AlarmManagerService extends SystemService {
                         blockAlarm = true;
                     }
 		}
-	    //}
+	    }
 
 	    
 
@@ -1241,7 +1238,7 @@ class AlarmManagerService extends SystemService {
         Alarm a = new Alarm(type, when, whenElapsed, windowLength, maxWhen, interval,
                 operation, directReceiver, listenerTag, workSource, flags, alarmClock,
                 callingUid, callingPackage);
-        try {
+        /*try {
             if (ActivityManagerNative.getDefault().getAppStartMode(callingUid, callingPackage)
                     == ActivityManager.APP_START_MODE_DISABLED) {
                 Slog.w(TAG, "Not setting alarm from " + callingUid + ":" + a
@@ -1249,7 +1246,7 @@ class AlarmManagerService extends SystemService {
                 return;
             }
         } catch (RemoteException e) {
-        }
+        } */
         removeLocked(operation, directReceiver);
         setImplLocked(a, false, doValidate);
     }
@@ -2931,7 +2928,7 @@ class AlarmManagerService extends SystemService {
 	    if( mPowerManager == null ) {	    
 	        Slog.v(TAG, "TIME_TICK alarm: mPowermanager=null");
 	    }
-	    if( mPowerManager != null && (!mPowerManager.isLightDeviceIdleMode() && mPowerManager.isDeviceIdleMode()) ) {
+	    if( mPowerManager != null && (mPowerManager.isDeviceIdleMode()) ) {
                 Slog.v(TAG, "TIME_TICK alarm; non-wakeup");
                 setImpl(ELAPSED_REALTIME, SystemClock.elapsedRealtime() + tickEventDelay, 0,
                     0, mTimeTickSender, null, null, AlarmManager.FLAG_STANDALONE, workSource,

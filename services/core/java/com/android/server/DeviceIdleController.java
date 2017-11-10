@@ -135,6 +135,7 @@ public class DeviceIdleController extends SystemService
     private AnyMotionDetector mAnyMotionDetector;
     private boolean mLightEnabled;
     private boolean mDeepEnabled;
+    private boolean mSemiIdleEnabled;
     private boolean mForceIdle;
     private boolean mNetworkConnected;
     private boolean mScreenOn;
@@ -1071,7 +1072,7 @@ public class DeviceIdleController extends SystemService
                         lightChanged = mLocalPowerManager.setLightDeviceIdleMode(true);
                     }
                     try {
-                        // mNetworkPolicyManager.setDeviceIdleMode(true);
+                        mNetworkPolicyManager.setDeviceIdleMode(false);
                         mBatteryStats.noteDeviceIdleMode(msg.what == MSG_REPORT_IDLE_ON
                                 ? BatteryStats.DEVICE_IDLE_MODE_DEEP
                                 : BatteryStats.DEVICE_IDLE_MODE_LIGHT, null, Process.myUid());
@@ -1090,7 +1091,7 @@ public class DeviceIdleController extends SystemService
                     // mActiveIdleWakeLock is held at this point
                     EventLogTags.writeDeviceIdleOffStart("unknown");
                     final boolean deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
-                    final boolean lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
+                    final boolean lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false /*mSemiIdleEnabled*/);
                     try {
                         mNetworkPolicyManager.setDeviceIdleMode(false);
                         mBatteryStats.noteDeviceIdleMode(BatteryStats.DEVICE_IDLE_MODE_OFF,
@@ -1119,7 +1120,7 @@ public class DeviceIdleController extends SystemService
                     EventLogTags.writeDeviceIdleOffStart(
                             activeReason != null ? activeReason : "unknown");
                     final boolean deepChanged = mLocalPowerManager.setDeviceIdleMode(false);
-                    final boolean lightChanged = mLocalPowerManager.setLightDeviceIdleMode(false);
+                    final boolean lightChanged = mLocalPowerManager.setLightDeviceIdleMode(/*false*/ mSemiIdleEnabled);
                     try {
                         mNetworkPolicyManager.setDeviceIdleMode(false);
                         mBatteryStats.noteDeviceIdleMode(BatteryStats.DEVICE_IDLE_MODE_OFF,
@@ -1874,10 +1875,10 @@ public class DeviceIdleController extends SystemService
         } else if (screenOn) {
             mScreenOn = true;
             if (!mForceIdle) {
+		mSemiIdleEnabled = SystemProperties.getBoolean(SEMIIDLE_SYSTEM_PROPERTY, false);
+       		if (DEBUG) Slog.d(TAG, "SemiIdle mode enabled=" + mSemiIdleEnabled);
                 becomeActiveLocked("screen", Process.myUid());
-		boolean semiIdleEnabled = SystemProperties.getBoolean(SEMIIDLE_SYSTEM_PROPERTY, false);
-       		if (DEBUG) Slog.d(TAG, "SemiIdle mode enabled=" + semiIdleEnabled);
-		if( semiIdleEnabled ) {
+		if( mSemiIdleEnabled ) {
 		    becomeInactiveIfAppropriateLocked();
 		} 
             }
@@ -1924,10 +1925,12 @@ public class DeviceIdleController extends SystemService
     void becomeInactiveIfAppropriateLocked() {
         if (DEBUG) Slog.d(TAG, "becomeInactiveIfAppropriateLocked()");
 
-	boolean idleEnabled = SystemProperties.getBoolean(DEVIDLE_SYSTEM_PROPERTY, false);
+	boolean idleEnabled = SystemProperties.getBoolean(DEVIDLE_SYSTEM_PROPERTY, true);
 	if (DEBUG) Slog.d(TAG, "Idle mode enabled=" + idleEnabled);
 	if( !idleEnabled ) {
-            becomeActiveLocked("disabled", Process.myUid());
+	    if( mState != STATE_ACTIVE || mLightState != LIGHT_STATE_ACTIVE ) {
+                becomeActiveLocked("disabled", Process.myUid());
+	    }
 	    return;
 	}
 
@@ -1941,13 +1944,14 @@ public class DeviceIdleController extends SystemService
                 scheduleAlarmLocked(mInactiveTimeout, false);
                 EventLogTags.writeDeviceIdle(mState, "no activity");
             }
-            if (mLightState == LIGHT_STATE_ACTIVE && mLightEnabled) {
+            if ( ((mScreenOn && mSemiIdleEnabled) || !mScreenOn) && mLightState == LIGHT_STATE_ACTIVE && mLightEnabled) {
                 mLightState = LIGHT_STATE_INACTIVE;
                 if (DEBUG) Slog.d(TAG, "Moved from LIGHT_STATE_ACTIVE to LIGHT_STATE_INACTIVE");
                 resetLightIdleManagementLocked();
                 scheduleLightAlarmLocked(mConstants.LIGHT_IDLE_AFTER_INACTIVE_TIMEOUT, false);
                 EventLogTags.writeDeviceIdleLight(mLightState, "no activity");
             }
+	
         }
     }
 
